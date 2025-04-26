@@ -87,6 +87,7 @@ int TransferEnginePy::initializeExt(const char *local_hostname,
                                     const char *protocol,
                                     const char *device_name,
                                     const char *metadata_type) {
+    pybind11::gil_scoped_release release;
     (void)(protocol);
     std::string conn_string = buildConnString(metadata_type, metadata_server);
 
@@ -152,6 +153,7 @@ int TransferEnginePy::doBuddyAllocate(int class_id) {
 }
 
 uintptr_t TransferEnginePy::allocateManagedBuffer(size_t length) {
+    pybind11::gil_scoped_release release;
     std::lock_guard<std::mutex> guard(mutex_);
     int class_id = findClassId(length);
     if (class_id < 0) {
@@ -168,6 +170,7 @@ uintptr_t TransferEnginePy::allocateManagedBuffer(size_t length) {
 }
 
 int TransferEnginePy::freeManagedBuffer(uintptr_t buffer_addr, size_t length) {
+    pybind11::gil_scoped_release release;
     std::lock_guard<std::mutex> guard(mutex_);
     auto buffer = (char *)buffer_addr;
     int class_id = findClassId(length);
@@ -303,11 +306,13 @@ int TransferEnginePy::transferSync(const char *target_hostname,
 }
 
 int TransferEnginePy::registerMemory(uintptr_t buffer_addr, size_t capacity) {
+    pybind11::gil_scoped_release release;
     char *buffer = reinterpret_cast<char *>(buffer_addr);
     return engine_->registerLocalMemory(buffer, capacity);
 }
 
 int TransferEnginePy::unregisterMemory(uintptr_t buffer_addr) {
+    pybind11::gil_scoped_release release;
     char *buffer = reinterpret_cast<char *>(buffer_addr);
     return engine_->unregisterLocalMemory(buffer);
 }
