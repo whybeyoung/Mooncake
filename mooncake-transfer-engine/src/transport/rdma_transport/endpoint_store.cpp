@@ -39,10 +39,12 @@ std::shared_ptr<RdmaEndPoint> FIFOEndpointStore::insertEndpoint(
     const std::string &peer_nic_path, RdmaContext *context) {
     RWSpinlock::WriteGuard guard(endpoint_map_lock_);
     if (endpoint_map_.find(peer_nic_path) != endpoint_map_.end()) {
-        LOG(INFO) << "Endpoint " << peer_nic_path
-                  << " already exists in FIFOEndpointStore";
         return endpoint_map_[peer_nic_path];
     }
+    
+    LOG(INFO) << "[QP_DEBUG] insertEndpoint() CREATE new endpoint: " << peer_nic_path
+              << ", total_qp_before: " << context->getTotalQPNumber();
+    
     auto endpoint = std::make_shared<RdmaEndPoint>(*context);
     if (!endpoint) {
         LOG(ERROR) << "Failed to allocate memory for RdmaEndPoint";
@@ -61,6 +63,10 @@ std::shared_ptr<RdmaEndPoint> FIFOEndpointStore::insertEndpoint(
     fifo_list_.push_back(peer_nic_path);
     auto it = fifo_list_.end();
     fifo_map_[peer_nic_path] = --it;
+    
+    LOG(INFO) << "[QP_DEBUG] insertEndpoint() SUCCESS: " << peer_nic_path
+              << ", total_qp_after: " << context->getTotalQPNumber();
+    
     return endpoint;
 }
 
@@ -70,6 +76,8 @@ int FIFOEndpointStore::deleteEndpoint(const std::string &peer_nic_path) {
     // remove endpoint but leaving it status unchanged
     // in case it is setting up connection or submitting slice
     if (iter != endpoint_map_.end()) {
+        LOG(INFO) << "[QP_DEBUG] deleteEndpoint() peer: " << peer_nic_path
+                  << ", endpoint_qp_count: " << iter->second->getQPNumber();
         waiting_list_.insert(iter->second);
         endpoint_map_.erase(iter);
         auto fifo_iter = fifo_map_[peer_nic_path];
@@ -142,10 +150,12 @@ std::shared_ptr<RdmaEndPoint> SIEVEEndpointStore::insertEndpoint(
     const std::string &peer_nic_path, RdmaContext *context) {
     RWSpinlock::WriteGuard guard(endpoint_map_lock_);
     if (endpoint_map_.find(peer_nic_path) != endpoint_map_.end()) {
-        LOG(INFO) << "Endpoint " << peer_nic_path
-                  << " already exists in SIEVEEndpointStore";
         return endpoint_map_[peer_nic_path].first;
     }
+    
+    LOG(INFO) << "[QP_DEBUG] insertEndpoint() CREATE new endpoint (SIEVE): " << peer_nic_path
+              << ", total_qp_before: " << context->getTotalQPNumber();
+    
     auto endpoint = std::make_shared<RdmaEndPoint>(*context);
     if (!endpoint) {
         LOG(ERROR) << "Failed to allocate memory for RdmaEndPoint";
@@ -163,6 +173,10 @@ std::shared_ptr<RdmaEndPoint> SIEVEEndpointStore::insertEndpoint(
     endpoint_map_[peer_nic_path] = std::make_pair(endpoint, true);
     fifo_list_.push_front(peer_nic_path);
     fifo_map_[peer_nic_path] = fifo_list_.begin();
+    
+    LOG(INFO) << "[QP_DEBUG] insertEndpoint() SUCCESS (SIEVE): " << peer_nic_path
+              << ", total_qp_after: " << context->getTotalQPNumber();
+    
     return endpoint;
 }
 
@@ -172,6 +186,8 @@ int SIEVEEndpointStore::deleteEndpoint(const std::string &peer_nic_path) {
     // remove endpoint but leaving it status unchanged
     // in case it is setting up connection or submitting slice
     if (iter != endpoint_map_.end()) {
+        LOG(INFO) << "[QP_DEBUG] deleteEndpoint() (SIEVE) peer: " << peer_nic_path
+                  << ", endpoint_qp_count: " << iter->second.first->getQPNumber();
         waiting_list_len_++;
         waiting_list_.insert(iter->second.first);
         endpoint_map_.erase(iter);
