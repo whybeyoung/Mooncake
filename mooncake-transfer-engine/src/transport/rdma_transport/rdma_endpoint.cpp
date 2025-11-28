@@ -72,8 +72,7 @@ int RdmaEndPoint::construct(ibv_cq *cq, size_t num_qp_list,
         }
     }
 
-    LOG(INFO) << "[QP_DEBUG] construct() created " << num_qp_list
-              << " QPs, total_qp_in_ctx: " << context_.getTotalQPNumber();
+    LOG(INFO) << "[QP_DEBUG] construct() created " << num_qp_list << " QPs";
 
     status_.store(UNCONNECTED, std::memory_order_relaxed);
     return 0;
@@ -81,7 +80,6 @@ int RdmaEndPoint::construct(ibv_cq *cq, size_t num_qp_list,
 
 int RdmaEndPoint::deconstruct() {
     size_t qp_count = qp_list_.size();
-    size_t total_qp_before = context_.getTotalQPNumber();
     
     for (size_t i = 0; i < qp_list_.size(); ++i) {
         if (ibv_destroy_qp(qp_list_[i])) {
@@ -101,9 +99,7 @@ int RdmaEndPoint::deconstruct() {
         }
     }
     
-    LOG(INFO) << "[QP_DEBUG] deconstruct() destroyed " << qp_count
-              << " QPs, total_qp_before: " << total_qp_before
-              << ", total_qp_after: " << context_.getTotalQPNumber();
+    LOG(INFO) << "[QP_DEBUG] deconstruct() destroyed " << qp_count << " QPs";
     
     qp_list_.clear();
     delete[] wr_depth_list_;
@@ -128,8 +124,7 @@ int RdmaEndPoint::setupConnectionsByActive() {
         return 0;
     }
 
-    LOG(INFO) << "[QP_DEBUG] setupConnectionsByActive() peer: " << peer_nic_path_
-              << ", total_qp_in_ctx: " << context_.getTotalQPNumber();
+    LOG(INFO) << "[QP_DEBUG] setupConnectionsByActive() peer: " << peer_nic_path_;
 
     // loopback mode
     if (context_.nicPath() == peer_nic_path_) {
@@ -197,8 +192,7 @@ int RdmaEndPoint::setupConnectionsByPassive(const HandShakeDesc &peer_desc,
         disconnectUnlocked();
     }
 
-    LOG(INFO) << "[QP_DEBUG] setupConnectionsByPassive() peer: " << peer_nic_path_
-              << ", total_qp_in_ctx: " << context_.getTotalQPNumber();
+    LOG(INFO) << "[QP_DEBUG] setupConnectionsByPassive() peer: " << peer_nic_path_;
 
     if (peer_desc.peer_nic_path != context_.nicPath() ||
         peer_desc.local_nic_path != peer_nic_path_) {

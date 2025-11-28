@@ -42,8 +42,7 @@ std::shared_ptr<RdmaEndPoint> FIFOEndpointStore::insertEndpoint(
         return endpoint_map_[peer_nic_path];
     }
     
-    LOG(INFO) << "[QP_DEBUG] insertEndpoint() CREATE new endpoint: " << peer_nic_path
-              << ", total_qp_before: " << context->getTotalQPNumber();
+    LOG(INFO) << "[QP_DEBUG] insertEndpoint() CREATE new endpoint: " << peer_nic_path;
     
     auto endpoint = std::make_shared<RdmaEndPoint>(*context);
     if (!endpoint) {
@@ -64,8 +63,7 @@ std::shared_ptr<RdmaEndPoint> FIFOEndpointStore::insertEndpoint(
     auto it = fifo_list_.end();
     fifo_map_[peer_nic_path] = --it;
     
-    LOG(INFO) << "[QP_DEBUG] insertEndpoint() SUCCESS: " << peer_nic_path
-              << ", total_qp_after: " << context->getTotalQPNumber();
+    LOG(INFO) << "[QP_DEBUG] insertEndpoint() SUCCESS: " << peer_nic_path;
     
     return endpoint;
 }
@@ -153,8 +151,7 @@ std::shared_ptr<RdmaEndPoint> SIEVEEndpointStore::insertEndpoint(
         return endpoint_map_[peer_nic_path].first;
     }
     
-    LOG(INFO) << "[QP_DEBUG] insertEndpoint() CREATE new endpoint (SIEVE): " << peer_nic_path
-              << ", total_qp_before: " << context->getTotalQPNumber();
+    LOG(INFO) << "[QP_DEBUG] insertEndpoint() CREATE new endpoint (SIEVE): " << peer_nic_path;
     
     auto endpoint = std::make_shared<RdmaEndPoint>(*context);
     if (!endpoint) {
@@ -174,8 +171,7 @@ std::shared_ptr<RdmaEndPoint> SIEVEEndpointStore::insertEndpoint(
     fifo_list_.push_front(peer_nic_path);
     fifo_map_[peer_nic_path] = fifo_list_.begin();
     
-    LOG(INFO) << "[QP_DEBUG] insertEndpoint() SUCCESS (SIEVE): " << peer_nic_path
-              << ", total_qp_after: " << context->getTotalQPNumber();
+    LOG(INFO) << "[QP_DEBUG] insertEndpoint() SUCCESS (SIEVE): " << peer_nic_path;
     
     return endpoint;
 }
