@@ -146,5 +146,7 @@ Available log levels: trace, debug, info, warn (or warning), error, and critical
 :caption: Advanced Topics
 :maxdepth: 1
 
+mooncake-master-deployment
+mooncake-client-deployment
 ssd-offload
 :::
