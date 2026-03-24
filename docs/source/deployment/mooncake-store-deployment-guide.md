@@ -147,4 +147,5 @@ Available log levels: trace, debug, info, warn (or warning), error, and critical
 :maxdepth: 1
 
 ssd-offload
+offload-production-test-plan
 :::

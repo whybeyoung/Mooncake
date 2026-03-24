@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kvmaster
+  labels:
+    app: kvmaster
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kvmaster
+  template:
+    metadata:
+      labels:
+        app: kvmaster
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: kvmaster
+          image: artifacts.iflytek.com/docker-private/aipaas/maas-mooncake-master:v0.3.10.0323
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MC_ENABLE_HA
+              value: "true"
+            - name: MC_ETCD_ENDPOINTS
+              value: "127.0.0.1:2379"
+            - name: MC_ENABLE_HTTP_METADATA_SERVER
+              value: "true"
+            - name: MC_DEFAULT_KV_LEASE_TTL
+              value: "1800000"
+          ports:
+            - name: rpc
+              containerPort: 50051
+              hostPort: 50051
+              protocol: TCP
+            - name: metrics
+              containerPort: 9003
+              hostPort: 9003
+              protocol: TCP
+            - name: http-meta
+              containerPort: 8080
+              hostPort: 8080
+              protocol: TCP
