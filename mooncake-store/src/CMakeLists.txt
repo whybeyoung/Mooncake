@@ -131,29 +131,44 @@ endif()
 
 # The cache_allocator library
 include_directories(${Python3_INCLUDE_DIRS})
-add_library(mooncake_store ${MOONCAKE_STORE_SOURCES})
+set(MOONCAKE_STORE_LINK_LIBS
+    cachelib_memory_allocator
+    ${ETCD_WRAPPER_LIB}
+    glog::glog
+    gflags::gflags
+    ${EXTRA_LIBS}
+    asio_shared)
+
+add_library(mooncake_store_objects OBJECT ${MOONCAKE_STORE_SOURCES})
+set_target_properties(mooncake_store_objects PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(mooncake_store_objects PUBLIC ${XXHASH_INCLUDE_DIR})
+target_link_libraries(mooncake_store_objects PUBLIC ${XXHASH_LIBRARY})
+target_link_libraries(
+  mooncake_store_objects
+  PUBLIC ${MOONCAKE_STORE_LINK_LIBS}
+  PRIVATE transfer_engine)
+
+if(URING_LIB AND URING_INCLUDE)
+  target_compile_definitions(mooncake_store_objects PUBLIC USE_URING)
+  target_include_directories(mooncake_store_objects PRIVATE ${URING_INCLUDE})
+endif()
+
+add_library(mooncake_store $<TARGET_OBJECTS:mooncake_store_objects>)
 target_include_directories(mooncake_store PUBLIC ${XXHASH_INCLUDE_DIR})
 target_link_libraries(mooncake_store PUBLIC ${XXHASH_LIBRARY})
 if(STORE_USE_REDIS)
-    target_include_directories(mooncake_store PRIVATE
-        ${MOONCAKE_STORE_HIREDIS_INCLUDE_DIR})
+  target_include_directories(mooncake_store PRIVATE
+                             ${MOONCAKE_STORE_HIREDIS_INCLUDE_DIR})
 endif()
-# Note: transfer_engine is PRIVATE to avoid propagating its dependencies (e.g., vendor-specific hardware)
-# to targets that don't need it (e.g., mooncake_master).
-# Targets that need transfer_engine should link it explicitly.
-target_link_libraries(mooncake_store
-    PUBLIC
-        cachelib_memory_allocator
-        ${ETCD_WRAPPER_LIB}
-        glog::glog
-        gflags::gflags
-        ${EXTRA_LIBS}
-        asio_shared
-    PRIVATE
-        transfer_engine
-)
+# Note: transfer_engine is PRIVATE to avoid propagating its dependencies (e.g.,
+# vendor-specific hardware) to targets that don't need it (e.g.,
+# mooncake_master). Targets that need transfer_engine should link it explicitly.
+target_link_libraries(
+  mooncake_store
+  PUBLIC ${MOONCAKE_STORE_LINK_LIBS}
+  PRIVATE transfer_engine)
 if(STORE_USE_ETCD)
-    add_dependencies(mooncake_store build_etcd_wrapper)
+  add_dependencies(mooncake_store build_etcd_wrapper)
 endif()
 
 if(URING_LIB AND URING_INCLUDE)
