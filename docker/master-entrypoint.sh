@@ -39,7 +39,7 @@ set -euo pipefail
 : "${MC_RPC_ENABLE_TCP_NO_DELAY:=true}"
 
 : "${MC_ENABLE_HA:=false}"
-: "${MC_ENABLE_OFFLOAD:=false}"
+: "${MC_ENABLE_OFFLOAD:=true}"
 : "${MC_ETCD_ENDPOINTS:=}"
 : "${MC_CLIENT_TTL:=10}"
 
@@ -73,6 +73,11 @@ set -euo pipefail
 : "${MC_PENDING_TASK_TIMEOUT_SEC:=300}"
 : "${MC_PROCESSING_TASK_TIMEOUT_SEC:=300}"
 : "${MC_MAX_RETRY_ATTEMPTS:=10}"
+
+# glog (google::InitGoogleLogging runs when --log_dir is non-empty in mooncake_master)
+: "${MC_LOG_DIR:=/var/log/mooncake}"
+: "${MC_GLOG_MINLOGLEVEL:=2}"
+: "${MC_GLOG_LOGTOSTDERR:=1}"
 
 case "$(printf '%s' "${MC_ENABLE_HA}" | tr '[:upper:]' '[:lower:]')" in
   true|1|yes|on)
@@ -136,6 +141,11 @@ args+=(
   "--pending_task_timeout_sec=${MC_PENDING_TASK_TIMEOUT_SEC}"
   "--processing_task_timeout_sec=${MC_PROCESSING_TASK_TIMEOUT_SEC}"
   "--max_retry_attempts=${MC_MAX_RETRY_ATTEMPTS}"
+  "--minloglevel=${MC_GLOG_MINLOGLEVEL}"
+  "--logtostderr=${MC_GLOG_LOGTOSTDERR}"
+  "--log_dir=${MC_LOG_DIR}"
 )
+
+mkdir -p "${MC_LOG_DIR}"
 
 exec "${MC_MASTER_BIN}" "${args[@]}" "$@"

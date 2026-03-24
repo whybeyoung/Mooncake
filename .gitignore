@@ -205,3 +205,4 @@ _codeql_detected_source_root
 
 # CodeBuddy Memory
 .codebuddy/
+.agents/skills/mooncake-api/SKILL.md
