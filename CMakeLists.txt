@@ -59,6 +59,7 @@ if (WITH_STORE)
   message(STATUS "Mooncake Store will be built")
   add_subdirectory(mooncake-store)
   include_directories(mooncake-store/include)
+  add_subdirectory(connector)
 endif()
 
 if (WITH_EP)
