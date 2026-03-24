@@ -6,6 +6,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <json/json.h>
 #include <ylt/coro_http/coro_http_server.hpp>
@@ -39,8 +40,20 @@ class HttpTestService {
                          coro_http::coro_http_response& resp);
     void HandleGetObjectMeta(coro_http::coro_http_request& req,
                              coro_http::coro_http_response& resp);
+    void HandleGetObjectReplicas(coro_http::coro_http_request& req,
+                                 coro_http::coro_http_response& resp);
+    void HandleBatchObjectReplicas(coro_http::coro_http_request& req,
+                                   coro_http::coro_http_response& resp);
+    void HandleBatchObjectExists(coro_http::coro_http_request& req,
+                                 coro_http::coro_http_response& resp);
     void HandleDeleteObject(coro_http::coro_http_request& req,
                             coro_http::coro_http_response& resp);
+    void HandleDeleteObjectsByRegex(coro_http::coro_http_request& req,
+                                    coro_http::coro_http_response& resp);
+    void HandleDeleteAllObjects(coro_http::coro_http_request& req,
+                                coro_http::coro_http_response& resp);
+    void HandleServiceConfig(coro_http::coro_http_request& req,
+                             coro_http::coro_http_response& resp);
     void HandleBenchmarkStart(coro_http::coro_http_request& req,
                               coro_http::coro_http_response& resp);
     void HandleBenchmarkStop(coro_http::coro_http_request& req,
@@ -49,6 +62,10 @@ class HttpTestService {
                                coro_http::coro_http_response& resp);
 
     static Json::Value SnapshotToJson(const BenchmarkSnapshot& snapshot);
+    static Json::Value ReplicaDescriptorToJson(
+        const mooncake::Replica::Descriptor& descriptor);
+    static Json::Value ReplicaDescriptorsToJson(
+        const std::vector<mooncake::Replica::Descriptor>& descriptors);
     static std::string SerializeJson(const Json::Value& value);
     static void WriteJson(coro_http::coro_http_response& resp,
                           coro_http::status_type status, const Json::Value& body);
@@ -57,6 +74,8 @@ class HttpTestService {
                            const std::string& message);
     static std::optional<std::string> ExtractObjectKey(std::string_view url,
                                                        bool meta_endpoint);
+    static std::optional<std::vector<std::string>> ParseKeysFromBody(
+        std::string_view body, std::string& error_message);
     static std::string UrlDecode(std::string_view encoded);
     static std::string DeriveIpcSocketPath(
         const std::string& real_client_address,

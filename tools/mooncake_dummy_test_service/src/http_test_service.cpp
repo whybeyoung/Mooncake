@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
@@ -140,6 +141,12 @@ void HttpTestService::RegisterRoutes() {
             HandleGetObjectMeta(req, resp);
         });
 
+    server_.set_http_handler<GET>(
+        R"(/api/object/(.+)/replicas)",
+        [this](coro_http_request& req, coro_http_response& resp) {
+            HandleGetObjectReplicas(req, resp);
+        });
+
     server_.set_http_handler<PUT>(
         R"(/api/object/([^/]+))",
         [this](coro_http_request& req, coro_http_response& resp) {
@@ -156,6 +163,36 @@ void HttpTestService::RegisterRoutes() {
         R"(/api/object/([^/]+))",
         [this](coro_http_request& req, coro_http_response& resp) {
             HandleDeleteObject(req, resp);
+        });
+
+    server_.set_http_handler<GET>(
+        "/api/service/config",
+        [this](coro_http_request& req, coro_http_response& resp) {
+            HandleServiceConfig(req, resp);
+        });
+
+    server_.set_http_handler<POST>(
+        "/api/objects/replicas",
+        [this](coro_http_request& req, coro_http_response& resp) {
+            HandleBatchObjectReplicas(req, resp);
+        });
+
+    server_.set_http_handler<POST>(
+        "/api/objects/exists",
+        [this](coro_http_request& req, coro_http_response& resp) {
+            HandleBatchObjectExists(req, resp);
+        });
+
+    server_.set_http_handler<POST>(
+        "/api/objects/delete_by_regex",
+        [this](coro_http_request& req, coro_http_response& resp) {
+            HandleDeleteObjectsByRegex(req, resp);
+        });
+
+    server_.set_http_handler<POST>(
+        "/api/objects/delete_all",
+        [this](coro_http_request& req, coro_http_response& resp) {
+            HandleDeleteAllObjects(req, resp);
         });
 
     server_.set_http_handler<POST>(
@@ -335,6 +372,145 @@ void HttpTestService::HandleGetObjectMeta(coro_http::coro_http_request& req,
     WriteJson(resp, coro_http::status_type::ok, body);
 }
 
+void HttpTestService::HandleGetObjectReplicas(coro_http::coro_http_request& req,
+                                              coro_http::coro_http_response& resp) {
+    if (benchmark_runner_.IsActive()) {
+        WriteError(resp, coro_http::status_type::conflict,
+                   "benchmark is active");
+        return;
+    }
+
+    auto key = ExtractObjectKey(req.get_url(), false);
+    if (!key.has_value() || key->size() < std::string("/replicas").size() ||
+        key->substr(key->size() - std::string("/replicas").size()) !=
+            "/replicas") {
+        WriteError(resp, coro_http::status_type::bad_request,
+                   "invalid key path");
+        return;
+    }
+    key->resize(key->size() - std::string("/replicas").size());
+    if (key->empty()) {
+        WriteError(resp, coro_http::status_type::bad_request,
+                   "invalid key path");
+        return;
+    }
+
+    int exists = -1;
+    std::vector<Replica::Descriptor> replicas;
+    {
+        std::lock_guard<std::mutex> lock(control_client_mutex_);
+        exists = control_client_->isExist(*key);
+        if (exists == 1) {
+            replicas = control_client_->get_replica_desc(*key);
+        }
+    }
+
+    if (exists == 0) {
+        WriteError(resp, coro_http::status_type::not_found, "object not found");
+        return;
+    }
+    if (exists != 1) {
+        WriteError(resp, coro_http::status_type::internal_server_error,
+                   "replica query failed");
+        return;
+    }
+
+    Json::Value body(Json::objectValue);
+    body["key"] = *key;
+    body["exists"] = true;
+    body["replicas"] = ReplicaDescriptorsToJson(replicas);
+    WriteJson(resp, coro_http::status_type::ok, body);
+}
+
+void HttpTestService::HandleBatchObjectReplicas(
+    coro_http::coro_http_request& req, coro_http::coro_http_response& resp) {
+    if (benchmark_runner_.IsActive()) {
+        WriteError(resp, coro_http::status_type::conflict,
+                   "benchmark is active");
+        return;
+    }
+
+    std::string parse_error;
+    auto keys = ParseKeysFromBody(req.get_body(), parse_error);
+    if (!keys.has_value()) {
+        WriteError(resp, coro_http::status_type::bad_request, parse_error);
+        return;
+    }
+
+    std::vector<int> exists_results;
+    std::map<std::string, std::vector<Replica::Descriptor>> replica_map;
+    {
+        std::lock_guard<std::mutex> lock(control_client_mutex_);
+        exists_results = control_client_->batchIsExist(*keys);
+        replica_map = control_client_->batch_get_replica_desc(*keys);
+    }
+
+    Json::Value body(Json::objectValue);
+    Json::Value objects(Json::objectValue);
+    for (std::size_t index = 0; index < keys->size(); ++index) {
+        Json::Value entry(Json::objectValue);
+        const auto& key = keys->at(index);
+        const int exists =
+            index < exists_results.size() ? exists_results[index] : -1;
+        entry["exists"] = (exists == 1);
+        entry["replicas"] = exists == 1 && replica_map.count(key) > 0
+                                ? ReplicaDescriptorsToJson(replica_map.at(key))
+                                : Json::Value(Json::arrayValue);
+        objects[key] = std::move(entry);
+    }
+    body["objects"] = std::move(objects);
+    WriteJson(resp, coro_http::status_type::ok, body);
+}
+
+void HttpTestService::HandleBatchObjectExists(coro_http::coro_http_request& req,
+                                              coro_http::coro_http_response& resp) {
+    if (benchmark_runner_.IsActive()) {
+        WriteError(resp, coro_http::status_type::conflict,
+                   "benchmark is active");
+        return;
+    }
+
+    std::string parse_error;
+    auto keys = ParseKeysFromBody(req.get_body(), parse_error);
+    if (!keys.has_value()) {
+        WriteError(resp, coro_http::status_type::bad_request, parse_error);
+        return;
+    }
+
+    std::vector<int> exists_results;
+    std::vector<int64_t> sizes(keys->size(), -1);
+    std::map<std::string, std::vector<Replica::Descriptor>> replica_map;
+    {
+        std::lock_guard<std::mutex> lock(control_client_mutex_);
+        exists_results = control_client_->batchIsExist(*keys);
+        replica_map = control_client_->batch_get_replica_desc(*keys);
+        for (std::size_t index = 0; index < keys->size(); ++index) {
+            if (index < exists_results.size() && exists_results[index] == 1) {
+                sizes[index] = control_client_->getSize(keys->at(index));
+            }
+        }
+    }
+
+    Json::Value body(Json::objectValue);
+    Json::Value objects(Json::objectValue);
+    for (std::size_t index = 0; index < keys->size(); ++index) {
+        Json::Value entry(Json::objectValue);
+        const auto& key = keys->at(index);
+        const int exists =
+            index < exists_results.size() ? exists_results[index] : -1;
+        entry["exists"] = (exists == 1);
+        entry["size"] = sizes[index] >= 0 ? Json::Value(static_cast<Json::UInt64>(
+                                              sizes[index]))
+                                          : Json::Value(Json::nullValue);
+        entry["replicas"] = exists == 1 && replica_map.count(key) > 0
+                                ? ReplicaDescriptorsToJson(replica_map.at(key))
+                                : Json::Value(Json::arrayValue);
+        objects[key] = std::move(entry);
+    }
+    body["objects"] = std::move(objects);
+    WriteJson(resp, coro_http::status_type::ok, body);
+}
+
 void HttpTestService::HandleDeleteObject(coro_http::coro_http_request& req,
                                          coro_http::coro_http_response& resp) {
     if (benchmark_runner_.IsActive()) {
@@ -367,6 +543,97 @@ void HttpTestService::HandleDeleteObject(coro_http::coro_http_request& req,
     Json::Value body(Json::objectValue);
     body["key"] = *key;
     body["code"] = rc;
+    WriteJson(resp, coro_http::status_type::ok, body);
+}
+
+void HttpTestService::HandleDeleteObjectsByRegex(
+    coro_http::coro_http_request& req, coro_http::coro_http_response& resp) {
+    if (benchmark_runner_.IsActive()) {
+        WriteError(resp, coro_http::status_type::conflict,
+                   "benchmark is active");
+        return;
+    }
+
+    std::string parse_error;
+    auto json =
+        ParseJsonBody(std::string(req.get_body()), parse_error)
+            .value_or(Json::Value(Json::objectValue));
+    if (!parse_error.empty()) {
+        WriteError(resp, coro_http::status_type::bad_request, parse_error);
+        return;
+    }
+
+    const auto regex = json.get("regex", "").asString();
+    const bool force = json.get("force", false).asBool();
+    if (regex.empty()) {
+        WriteError(resp, coro_http::status_type::bad_request,
+                   "regex must not be empty");
+        return;
+    }
+
+    long removed = -1;
+    {
+        std::lock_guard<std::mutex> lock(control_client_mutex_);
+        removed = control_client_->removeByRegex(regex, force);
+    }
+    if (removed < 0) {
+        WriteError(resp, coro_http::status_type::internal_server_error,
+                   "removeByRegex failed");
+        return;
+    }
+
+    Json::Value body(Json::objectValue);
+    body["regex"] = regex;
+    body["force"] = force;
+    body["removed"] = static_cast<Json::Int64>(removed);
+    WriteJson(resp, coro_http::status_type::ok, body);
+}
+
+void HttpTestService::HandleDeleteAllObjects(coro_http::coro_http_request& req,
+                                             coro_http::coro_http_response& resp) {
+    if (benchmark_runner_.IsActive()) {
+        WriteError(resp, coro_http::status_type::conflict,
+                   "benchmark is active");
+        return;
+    }
+
+    std::string parse_error;
+    auto json =
+        ParseJsonBody(std::string(req.get_body()), parse_error)
+            .value_or(Json::Value(Json::objectValue));
+    if (!parse_error.empty()) {
+        WriteError(resp, coro_http::status_type::bad_request, parse_error);
+        return;
+    }
+
+    const bool force = json.get("force", false).asBool();
+    long removed = -1;
+    {
+        std::lock_guard<std::mutex> lock(control_client_mutex_);
+        removed = control_client_->removeAll(force);
+    }
+    if (removed < 0) {
+        WriteError(resp, coro_http::status_type::internal_server_error,
+                   "removeAll failed");
+        return;
+    }
+
+    Json::Value body(Json::objectValue);
+    body["force"] = force;
+    body["removed"] = static_cast<Json::Int64>(removed);
+    WriteJson(resp, coro_http::status_type::ok, body);
+}
+
+void HttpTestService::HandleServiceConfig(coro_http::coro_http_request&,
+                                          coro_http::coro_http_response& resp) {
+    Json::Value body(Json::objectValue);
+    body["real_client_address"] = real_client_address_;
+    body["ipc_socket_path"] = ipc_socket_path_;
+    body["mem_pool_size"] = static_cast<Json::UInt64>(mem_pool_size_);
+    body["local_buffer_size"] =
+        static_cast<Json::UInt64>(local_buffer_size_);
+    body["default_replica_num"] =
+        static_cast<Json::UInt64>(default_replica_num_);
     WriteJson(resp, coro_http::status_type::ok, body);
 }
 
@@ -500,6 +767,66 @@ Json::Value HttpTestService::SnapshotToJson(const BenchmarkSnapshot& snapshot) {
     return root;
 }
 
+Json::Value HttpTestService::ReplicaDescriptorToJson(
+    const mooncake::Replica::Descriptor& descriptor) {
+    Json::Value root(Json::objectValue);
+    root["id"] = static_cast<Json::UInt64>(descriptor.id);
+    root["status"] = [&descriptor]() {
+        std::ostringstream os;
+        os << descriptor.status;
+        return os.str();
+    }();
+
+    if (descriptor.is_memory_replica()) {
+        const auto& memory = descriptor.get_memory_descriptor();
+        root["type"] = "MEMORY";
+        root["object_size"] =
+            static_cast<Json::UInt64>(memory.buffer_descriptor.size_);
+        root["transport_endpoint"] =
+            memory.buffer_descriptor.transport_endpoint_;
+        root["file_path"] = Json::nullValue;
+        root["buffer_address"] = static_cast<Json::UInt64>(
+            memory.buffer_descriptor.buffer_address_);
+        root["buffer_size"] =
+            static_cast<Json::UInt64>(memory.buffer_descriptor.size_);
+    } else if (descriptor.is_disk_replica()) {
+        const auto& disk = descriptor.get_disk_descriptor();
+        root["type"] = "DISK";
+        root["object_size"] = static_cast<Json::UInt64>(disk.object_size);
+        root["transport_endpoint"] = Json::nullValue;
+        root["file_path"] = disk.file_path;
+        root["buffer_address"] = Json::nullValue;
+        root["buffer_size"] = Json::nullValue;
+    } else if (descriptor.is_local_disk_replica()) {
+        const auto& local_disk = descriptor.get_local_disk_descriptor();
+        root["type"] = "LOCAL_DISK";
+        root["object_size"] =
+            static_cast<Json::UInt64>(local_disk.object_size);
+        root["transport_endpoint"] = local_disk.transport_endpoint;
+        root["file_path"] = Json::nullValue;
+        root["buffer_address"] = Json::nullValue;
+        root["buffer_size"] = Json::nullValue;
+    } else {
+        root["type"] = "UNKNOWN";
+        root["object_size"] = Json::nullValue;
+        root["transport_endpoint"] = Json::nullValue;
+        root["file_path"] = Json::nullValue;
+        root["buffer_address"] = Json::nullValue;
+        root["buffer_size"] = Json::nullValue;
+    }
+
+    return root;
+}
+
+Json::Value HttpTestService::ReplicaDescriptorsToJson(
+    const std::vector<mooncake::Replica::Descriptor>& descriptors) {
+    Json::Value root(Json::arrayValue);
+    for (const auto& descriptor : descriptors) {
+        root.append(ReplicaDescriptorToJson(descriptor));
+    }
+    return root;
+}
+
 std::string HttpTestService::SerializeJson(const Json::Value& value) {
     Json::StreamWriterBuilder builder;
     builder["indentation"] = "";
@@ -537,6 +864,31 @@ std::optional<std::string> HttpTestService::ExtractObjectKey(std::string_view ur
         return std::nullopt;
     }
     return UrlDecode(url);
+}
+
+std::optional<std::vector<std::string>> HttpTestService::ParseKeysFromBody(
+    std::string_view body, std::string& error_message) {
+    auto json = ParseJsonBody(std::string(body), error_message);
+    if (!json.has_value()) {
+        return std::nullopt;
+    }
+
+    const auto& keys = (*json)["keys"];
+    if (!keys.isArray() || keys.empty()) {
+        error_message = "keys must be a non-empty array";
+        return std::nullopt;
+    }
+
+    std::vector<std::string> result;
+    result.reserve(keys.size());
+    for (const auto& key : keys) {
+        if (!key.isString() || key.asString().empty()) {
+            error_message = "keys must contain non-empty strings";
+            return std::nullopt;
+        }
+        result.push_back(key.asString());
+    }
+    return result;
 }
 
 std::string HttpTestService::UrlDecode(std::string_view encoded) {
