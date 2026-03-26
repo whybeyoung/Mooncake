@@ -850,7 +850,7 @@ class MasterService {
     const uint64_t default_kv_lease_ttl_;     // in milliseconds
     const uint64_t default_kv_soft_pin_ttl_;  // in milliseconds
     const bool allow_evict_soft_pinned_objects_;
-    const bool enable_group_grant_lease_;
+    const bool enable_group_ttl_;
 
     // Eviction related members
     std::atomic<bool> need_eviction_{

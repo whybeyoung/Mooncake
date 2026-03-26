@@ -76,10 +76,8 @@ DEFINE_bool(allow_evict_soft_pinned_objects,
             "Whether to allow eviction of soft pinned objects during eviction");
 DEFINE_validator(default_kv_lease_ttl, ValidateDurationFlag);
 DEFINE_validator(default_kv_soft_pin_ttl, ValidateDurationFlag);
-DEFINE_bool(enable_group_eviction, false,
-            "Enable group eviction for memory cache");
-DEFINE_bool(enable_group_grant_lease, false,
-            "Enable group lease renewal for memory cache");
+DEFINE_bool(enable_group_ttl, false,
+            "Enable group-based lease renewal and eviction for memory cache");
 DEFINE_double(eviction_ratio, mooncake::DEFAULT_EVICTION_RATIO,
               "Ratio of objects to evict when storage space is full");
 DEFINE_double(eviction_high_watermark_ratio,
@@ -253,9 +251,8 @@ void InitMasterConf(const mooncake::DefaultConfig& default_config,
     default_config.GetBool("allow_evict_soft_pinned_objects",
                            &master_config.allow_evict_soft_pinned_objects,
                            FLAGS_allow_evict_soft_pinned_objects);
-    default_config.GetBool("enable_group_grant_lease",
-                           &master_config.enable_group_grant_lease,
-                           FLAGS_enable_group_grant_lease);
+    default_config.GetBool("enable_group_ttl", &master_config.enable_group_ttl,
+                           FLAGS_enable_group_ttl);
     default_config.GetDouble("eviction_ratio", &master_config.eviction_ratio,
                              FLAGS_eviction_ratio);
     default_config.GetDouble("eviction_high_watermark_ratio",
@@ -483,10 +480,10 @@ void LoadConfigFromCmdline(mooncake::MasterConfig& master_config,
         master_config.allow_evict_soft_pinned_objects =
             FLAGS_allow_evict_soft_pinned_objects;
     }
-    if ((google::GetCommandLineFlagInfo("enable_group_grant_lease", &info) &&
+    if ((google::GetCommandLineFlagInfo("enable_group_ttl", &info) &&
          !info.is_default) ||
         !conf_set) {
-        master_config.enable_group_grant_lease = FLAGS_enable_group_grant_lease;
+        master_config.enable_group_ttl = FLAGS_enable_group_ttl;
     }
     if ((google::GetCommandLineFlagInfo("eviction_ratio", &info) &&
          !info.is_default) ||
@@ -837,8 +834,7 @@ int main(int argc, char* argv[]) {
         << ", default_kv_soft_pin_ttl=" << master_config.default_kv_soft_pin_ttl
         << ", allow_evict_soft_pinned_objects="
         << master_config.allow_evict_soft_pinned_objects
-        << ", enable_group_grant_lease="
-        << master_config.enable_group_grant_lease
+        << ", enable_group_ttl=" << master_config.enable_group_ttl
         << ", eviction_ratio=" << master_config.eviction_ratio
         << ", eviction_high_watermark_ratio="
         << master_config.eviction_high_watermark_ratio
