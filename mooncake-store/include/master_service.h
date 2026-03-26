@@ -818,7 +818,7 @@ class MasterService {
     uint64_t ReleaseExpiredDiscardedReplicas(
         const std::chrono::system_clock::time_point& now);
 
-    // Group eviction helpers
+    // Group lease helpers
     static constexpr size_t kNumGroupShards = 64;
     struct GroupShard {
         mutable SharedMutex mutex;
@@ -837,6 +837,7 @@ class MasterService {
     void RemoveKeyFromGroupIndex(const std::string& key);
     std::vector<std::string> GetGroupMembers(const std::string& key) const;
     void RebuildGroupIndex();
+    void GrantLeaseToGroup(const std::string& key);
     std::array<GroupShard, kNumGroupShards> group_shards_;
 
     // Eviction thread function
@@ -849,7 +850,7 @@ class MasterService {
     const uint64_t default_kv_lease_ttl_;     // in milliseconds
     const uint64_t default_kv_soft_pin_ttl_;  // in milliseconds
     const bool allow_evict_soft_pinned_objects_;
-    const bool enable_group_eviction_;
+    const bool enable_group_grant_lease_;
 
     // Eviction related members
     std::atomic<bool> need_eviction_{

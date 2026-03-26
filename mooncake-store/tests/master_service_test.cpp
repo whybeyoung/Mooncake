@@ -73,9 +73,9 @@ class MasterServiceTest : public ::testing::Test {
         return true;
     }
 
-    void RunBatchEvict(MasterService& service, double target,
-                       double lowerbound) const {
-        service.BatchEvict(target, lowerbound);
+    size_t GetShardIndex(const MasterService& service,
+                         const std::string& key) const {
+        return service.getShardIndex(key);
     }
 
     std::vector<Replica::Descriptor> replica_list;
@@ -572,10 +572,8 @@ TEST_F(MasterServiceTest, GetReplicaListByRegex) {
 
 // Helper function to put an object, making the test cleaner
 void put_object(MasterService& service, const UUID& client_id,
-                const std::string& key) {
+                const std::string& key, ReplicateConfig config) {
     uint64_t value_length = 1024;
-    ReplicateConfig config;
-    config.replica_num = 1;
     auto put_start_result =
         service.PutStart(client_id, key, value_length, config);
     ASSERT_TRUE(put_start_result.has_value())
@@ -588,22 +586,50 @@ void put_object(MasterService& service, const UUID& client_id,
         << "Key does not exist after put: " << key;
 }
 
+void put_object(MasterService& service, const UUID& client_id,
+                const std::string& key) {
+    ReplicateConfig config;
+    config.replica_num = 1;
+    put_object(service, client_id, key, config);
+}
+
 TEST_F(MasterServiceTest, ExtractGroupKeyBasic) {
     auto service_ = std::make_unique<MasterService>(
-        MasterServiceConfig::builder().set_enable_group_eviction(true).build());
+        MasterServiceConfig::builder()
+            .set_enable_group_grant_lease(true)
+            .build());
 
     auto group_key = ExtractGroupKey(*service_, "session123_pprank0_chunk1");
     ASSERT_TRUE(group_key.has_value());
     EXPECT_EQ(group_key.value(), "session123");
+}
+
+TEST_F(MasterServiceTest, ExtractGroupKeyFirstUnderscoreOnly) {
+    auto service_ = std::make_unique<MasterService>(
+        MasterServiceConfig::builder()
+            .set_enable_group_grant_lease(true)
+            .build());
+
+    auto group_key = ExtractGroupKey(*service_, "foo_bar_baz");
+    ASSERT_TRUE(group_key.has_value());
+    EXPECT_EQ(group_key.value(), "foo");
+}
+
+TEST_F(MasterServiceTest, ExtractGroupKeyNoUnderscore) {
+    auto service_ = std::make_unique<MasterService>(
+        MasterServiceConfig::builder()
+            .set_enable_group_grant_lease(true)
+            .build());
 
     auto no_group = ExtractGroupKey(*service_, "nogroupkey");
     EXPECT_FALSE(no_group.has_value());
 }
 
-TEST_F(MasterServiceTest, GroupEvictionDisabledNoIndexMaintenance) {
-    auto service_ = std::make_unique<MasterService>(MasterServiceConfig::builder()
-                                                        .set_enable_group_eviction(false)
-                                                        .build());
+TEST_F(MasterServiceTest, GroupGrantLeaseDisabledNoIndexMaintenance) {
+    auto service_ = std::make_unique<MasterService>(
+        MasterServiceConfig::builder()
+            .set_enable_group_grant_lease(false)
+            .build());
     [[maybe_unused]] const auto context = PrepareSimpleSegment(*service_);
     const UUID client_id = generate_uuid();
 
@@ -616,7 +642,7 @@ TEST_F(MasterServiceTest, GroupEvictionDisabledNoIndexMaintenance) {
 TEST_F(MasterServiceTest, GroupIndexRegisterAndRemove) {
     auto service_ = std::make_unique<MasterService>(
         MasterServiceConfig::builder()
-            .set_enable_group_eviction(true)
+            .set_enable_group_grant_lease(true)
             .set_default_kv_lease_ttl(0)
             .build());
     [[maybe_unused]] const auto context = PrepareSimpleSegment(*service_);
@@ -636,54 +662,190 @@ TEST_F(MasterServiceTest, GroupIndexRegisterAndRemove) {
     EXPECT_EQ(remaining_members.front(), "group1_pprank1_layer0");
 }
 
-TEST_F(MasterServiceTest, GroupEvictionForcePastRefcnt) {
+TEST_F(MasterServiceTest, GroupGrantLeaseDisabledOnlyRenewsSeedKey) {
     auto service_ = std::make_unique<MasterService>(
         MasterServiceConfig::builder()
-            .set_enable_group_eviction(true)
-            .set_default_kv_lease_ttl(0)
+            .set_enable_group_grant_lease(false)
+            .set_default_kv_lease_ttl(2000)
             .build());
-
-    constexpr size_t kBaseAddr = 0x100000000;
-    constexpr size_t kSegmentSize = 16 * 1024 * 1024;
-    [[maybe_unused]] const auto context1 =
-        PrepareSimpleSegment(*service_, "segment_1", kBaseAddr, kSegmentSize);
-    [[maybe_unused]] const auto context2 =
-        PrepareSimpleSegment(*service_, "segment_2", kBaseAddr, kSegmentSize);
+    [[maybe_unused]] const auto context = PrepareSimpleSegment(*service_);
     const UUID client_id = generate_uuid();
 
-    ReplicateConfig config;
-    config.replica_num = 1;
-    config.preferred_segment = "segment_1";
+    const std::string seed_key = "group1_pprank0_layer0";
+    const std::string peer_key = "group1_pprank1_layer0";
+    const std::string other_key = "group2_pprank0_layer0";
+    put_object(*service_, client_id, seed_key);
+    put_object(*service_, client_id, peer_key);
+    put_object(*service_, client_id, other_key);
 
-    ASSERT_TRUE(service_
-                    ->PutStart(client_id, "group1_pprank0_layer0", 1024, config)
-                    .has_value());
-    ASSERT_TRUE(service_
-                    ->PutEnd(client_id, "group1_pprank0_layer0",
-                             ReplicaType::MEMORY)
-                    .has_value());
+    ASSERT_TRUE(service_->GetReplicaList(seed_key).has_value());
 
-    ASSERT_TRUE(service_
-                    ->PutStart(client_id, "group1_pprank1_layer0", 1024, config)
-                    .has_value());
-    ASSERT_TRUE(service_
-                    ->PutEnd(client_id, "group1_pprank1_layer0",
-                             ReplicaType::MEMORY)
-                    .has_value());
+    std::vector<std::string> keys = {seed_key, peer_key, other_key};
+    auto clear_result = service_->BatchReplicaClear(keys, client_id, "");
+    ASSERT_TRUE(clear_result.has_value());
 
-    auto copy_start_result = service_->CopyStart(
-        client_id, "group1_pprank1_layer0", "segment_1", {"segment_2"});
-    ASSERT_TRUE(copy_start_result.has_value());
+    std::unordered_set<std::string> cleared_keys(clear_result->begin(),
+                                                 clear_result->end());
+    EXPECT_EQ(cleared_keys.size(), 2u);
+    EXPECT_TRUE(cleared_keys.contains(peer_key));
+    EXPECT_TRUE(cleared_keys.contains(other_key));
+    EXPECT_FALSE(cleared_keys.contains(seed_key));
+}
 
-    RunBatchEvict(*service_, 1.0, 1.0);
+TEST_F(MasterServiceTest, GroupGrantLeaseBasic) {
+    auto service_ = std::make_unique<MasterService>(
+        MasterServiceConfig::builder()
+            .set_enable_group_grant_lease(true)
+            .set_default_kv_lease_ttl(2000)
+            .build());
+    [[maybe_unused]] const auto context = PrepareSimpleSegment(*service_);
+    const UUID client_id = generate_uuid();
 
-    auto seed_exists = service_->ExistKey("group1_pprank0_layer0");
-    ASSERT_TRUE(seed_exists.has_value());
-    EXPECT_FALSE(seed_exists.value());
+    const std::string seed_key = "group1_pprank0_layer0";
+    const std::string peer_key = "group1_pprank1_layer0";
+    const std::string other_key = "group2_pprank0_layer0";
+    put_object(*service_, client_id, seed_key);
+    put_object(*service_, client_id, peer_key);
+    put_object(*service_, client_id, other_key);
 
-    auto peer_exists = service_->ExistKey("group1_pprank1_layer0");
-    ASSERT_TRUE(peer_exists.has_value());
-    EXPECT_FALSE(peer_exists.value());
+    ASSERT_TRUE(service_->GetReplicaList(seed_key).has_value());
+
+    std::vector<std::string> keys = {seed_key, peer_key, other_key};
+    auto clear_result = service_->BatchReplicaClear(keys, client_id, "");
+    ASSERT_TRUE(clear_result.has_value());
+
+    std::unordered_set<std::string> cleared_keys(clear_result->begin(),
+                                                 clear_result->end());
+    EXPECT_EQ(cleared_keys.size(), 1u);
+    EXPECT_TRUE(cleared_keys.contains(other_key));
+    EXPECT_FALSE(cleared_keys.contains(seed_key));
+    EXPECT_FALSE(cleared_keys.contains(peer_key));
+}
+
+TEST_F(MasterServiceTest, GroupGrantLeaseNoUnderscoreOnlyRenewsSelf) {
+    auto service_ = std::make_unique<MasterService>(
+        MasterServiceConfig::builder()
+            .set_enable_group_grant_lease(true)
+            .set_default_kv_lease_ttl(2000)
+            .build());
+    [[maybe_unused]] const auto context = PrepareSimpleSegment(*service_);
+    const UUID client_id = generate_uuid();
+
+    const std::string plain_key = "plainkey";
+    const std::string other_key = "other_plainkey";
+    put_object(*service_, client_id, plain_key);
+    put_object(*service_, client_id, other_key);
+
+    ASSERT_TRUE(service_->GetReplicaList(plain_key).has_value());
+
+    std::vector<std::string> keys = {plain_key, other_key};
+    auto clear_result = service_->BatchReplicaClear(keys, client_id, "");
+    ASSERT_TRUE(clear_result.has_value());
+
+    std::unordered_set<std::string> cleared_keys(clear_result->begin(),
+                                                 clear_result->end());
+    EXPECT_EQ(cleared_keys.size(), 1u);
+    EXPECT_TRUE(cleared_keys.contains(other_key));
+    EXPECT_FALSE(cleared_keys.contains(plain_key));
+}
+
+TEST_F(MasterServiceTest, GroupGrantLeaseMissingPeerDoesNotBreakRenewal) {
+    auto service_ = std::make_unique<MasterService>(
+        MasterServiceConfig::builder()
+            .set_enable_group_grant_lease(true)
+            .set_default_kv_lease_ttl(2000)
+            .build());
+    [[maybe_unused]] const auto context = PrepareSimpleSegment(*service_);
+    const UUID client_id = generate_uuid();
+
+    const std::string seed_key = "group1_pprank0_layer0";
+    const std::string peer_key = "group1_pprank1_layer0";
+    put_object(*service_, client_id, seed_key);
+    put_object(*service_, client_id, peer_key);
+
+    auto remove_result = service_->Remove(peer_key);
+    ASSERT_TRUE(remove_result.has_value());
+    auto remaining_members = GetGroupMembers(*service_, seed_key);
+    ASSERT_EQ(remaining_members.size(), 1u);
+    EXPECT_EQ(remaining_members.front(), seed_key);
+
+    ASSERT_TRUE(service_->GetReplicaList(seed_key).has_value());
+
+    std::vector<std::string> keys = {seed_key};
+    auto clear_result = service_->BatchReplicaClear(keys, client_id, "");
+    ASSERT_TRUE(clear_result.has_value());
+    EXPECT_TRUE(clear_result->empty());
+}
+
+TEST_F(MasterServiceTest, GroupGrantLeaseCrossShard) {
+    auto service_ = std::make_unique<MasterService>(
+        MasterServiceConfig::builder()
+            .set_enable_group_grant_lease(true)
+            .set_default_kv_lease_ttl(2000)
+            .build());
+    [[maybe_unused]] const auto context = PrepareSimpleSegment(*service_);
+    const UUID client_id = generate_uuid();
+
+    const std::string seed_key = "group1_seed";
+    std::string peer_key;
+    for (size_t i = 0; i < 4096; ++i) {
+        std::string candidate = "group1_peer_" + std::to_string(i);
+        if (GetShardIndex(*service_, candidate) !=
+            GetShardIndex(*service_, seed_key)) {
+            peer_key = std::move(candidate);
+            break;
+        }
+    }
+    ASSERT_FALSE(peer_key.empty());
+
+    const std::string other_key = "group2_other";
+    put_object(*service_, client_id, seed_key);
+    put_object(*service_, client_id, peer_key);
+    put_object(*service_, client_id, other_key);
+
+    ASSERT_TRUE(service_->GetReplicaList(seed_key).has_value());
+
+    std::vector<std::string> keys = {seed_key, peer_key, other_key};
+    auto clear_result = service_->BatchReplicaClear(keys, client_id, "");
+    ASSERT_TRUE(clear_result.has_value());
+
+    std::unordered_set<std::string> cleared_keys(clear_result->begin(),
+                                                 clear_result->end());
+    EXPECT_EQ(cleared_keys.size(), 1u);
+    EXPECT_TRUE(cleared_keys.contains(other_key));
+    EXPECT_FALSE(cleared_keys.contains(seed_key));
+    EXPECT_FALSE(cleared_keys.contains(peer_key));
+}
+
+TEST_F(MasterServiceTest, GroupGrantLeaseRefreshesSoftPinForPeers) {
+    constexpr uint64_t kv_lease_ttl = 100;
+    constexpr uint64_t kv_soft_pin_ttl = 400;
+    static_assert(kv_soft_pin_ttl > kv_lease_ttl);
+    auto service_ = std::make_unique<MasterService>(
+        MasterServiceConfig::builder()
+            .set_enable_group_grant_lease(true)
+            .set_default_kv_lease_ttl(kv_lease_ttl)
+            .set_default_kv_soft_pin_ttl(kv_soft_pin_ttl)
+            .build());
+    [[maybe_unused]] const auto context = PrepareSimpleSegment(*service_);
+    const UUID client_id = generate_uuid();
+
+    ReplicateConfig soft_pin_config;
+    soft_pin_config.replica_num = 1;
+    soft_pin_config.with_soft_pin = true;
+
+    const std::string seed_key = "group1_pprank0_layer0";
+    const std::string peer_key = "group1_pprank1_layer0";
+    put_object(*service_, client_id, seed_key, soft_pin_config);
+    put_object(*service_, client_id, peer_key, soft_pin_config);
+
+    ASSERT_TRUE(service_->GetReplicaList(seed_key).has_value());
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(kv_lease_ttl + 50));
+
+    MasterService::MetadataAccessorRO peer_accessor(service_.get(), peer_key);
+    ASSERT_TRUE(peer_accessor.Exists());
+    EXPECT_TRUE(peer_accessor.Get().IsSoftPinned());
 }
 
 TEST_F(MasterServiceTest, GetReplicaListByRegexComplex) {

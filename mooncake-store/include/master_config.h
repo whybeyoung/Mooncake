@@ -23,7 +23,7 @@ struct MasterConfig {
     uint64_t default_kv_lease_ttl;
     uint64_t default_kv_soft_pin_ttl;
     bool allow_evict_soft_pinned_objects;
-    bool enable_group_eviction = false;
+    bool enable_group_grant_lease = false;
     double eviction_ratio;
     double eviction_high_watermark_ratio;
     int64_t client_live_ttl_sec;
@@ -92,7 +92,7 @@ class MasterServiceSupervisorConfig {
     RequiredParam<int64_t> default_kv_soft_pin_ttl{"default_kv_soft_pin_ttl"};
     RequiredParam<bool> allow_evict_soft_pinned_objects{
         "allow_evict_soft_pinned_objects"};
-    bool enable_group_eviction = false;
+    bool enable_group_grant_lease = false;
     RequiredParam<double> eviction_ratio{"eviction_ratio"};
     RequiredParam<double> eviction_high_watermark_ratio{
         "eviction_high_watermark_ratio"};
@@ -152,7 +152,7 @@ class MasterServiceSupervisorConfig {
         default_kv_soft_pin_ttl = config.default_kv_soft_pin_ttl;
         allow_evict_soft_pinned_objects =
             config.allow_evict_soft_pinned_objects;
-        enable_group_eviction = config.enable_group_eviction;
+        enable_group_grant_lease = config.enable_group_grant_lease;
         eviction_ratio = config.eviction_ratio;
         eviction_high_watermark_ratio = config.eviction_high_watermark_ratio;
         client_live_ttl_sec = config.client_live_ttl_sec;
@@ -260,7 +260,7 @@ class WrappedMasterServiceConfig {
     uint64_t default_kv_soft_pin_ttl = DEFAULT_KV_SOFT_PIN_TTL_MS;
     bool allow_evict_soft_pinned_objects =
         DEFAULT_ALLOW_EVICT_SOFT_PINNED_OBJECTS;
-    bool enable_group_eviction = false;
+    bool enable_group_grant_lease = false;
     bool enable_metric_reporting = true;
     uint16_t http_port = 9003;
     double eviction_ratio = DEFAULT_EVICTION_RATIO;
@@ -316,7 +316,7 @@ class WrappedMasterServiceConfig {
         default_kv_soft_pin_ttl = config.default_kv_soft_pin_ttl;
         allow_evict_soft_pinned_objects =
             config.allow_evict_soft_pinned_objects;
-        enable_group_eviction = config.enable_group_eviction;
+        enable_group_grant_lease = config.enable_group_grant_lease;
         enable_metric_reporting = config.enable_metric_reporting;
         http_port = static_cast<uint16_t>(config.metrics_port);
         eviction_ratio = config.eviction_ratio;
@@ -390,7 +390,7 @@ class WrappedMasterServiceConfig {
         default_kv_soft_pin_ttl = config.default_kv_soft_pin_ttl;
         allow_evict_soft_pinned_objects =
             config.allow_evict_soft_pinned_objects;
-        enable_group_eviction = config.enable_group_eviction;
+        enable_group_grant_lease = config.enable_group_grant_lease;
         enable_metric_reporting = config.enable_metric_reporting;
         http_port = static_cast<uint16_t>(config.metrics_port);
         eviction_ratio = config.eviction_ratio;
@@ -443,7 +443,7 @@ class MasterServiceConfigBuilder {
     uint64_t default_kv_soft_pin_ttl_ = DEFAULT_KV_SOFT_PIN_TTL_MS;
     bool allow_evict_soft_pinned_objects_ =
         DEFAULT_ALLOW_EVICT_SOFT_PINNED_OBJECTS;
-    bool enable_group_eviction_ = false;
+    bool enable_group_grant_lease_ = false;
     double eviction_ratio_ = DEFAULT_EVICTION_RATIO;
     double eviction_high_watermark_ratio_ =
         DEFAULT_EVICTION_HIGH_WATERMARK_RATIO;
@@ -502,8 +502,8 @@ class MasterServiceConfigBuilder {
         return *this;
     }
 
-    MasterServiceConfigBuilder& set_enable_group_eviction(bool enable) {
-        enable_group_eviction_ = enable;
+    MasterServiceConfigBuilder& set_enable_group_grant_lease(bool enable) {
+        enable_group_grant_lease_ = enable;
         return *this;
     }
 
@@ -724,7 +724,7 @@ class MasterServiceConfig {
     uint64_t default_kv_soft_pin_ttl = DEFAULT_KV_SOFT_PIN_TTL_MS;
     bool allow_evict_soft_pinned_objects =
         DEFAULT_ALLOW_EVICT_SOFT_PINNED_OBJECTS;
-    bool enable_group_eviction = false;
+    bool enable_group_grant_lease = false;
     double eviction_ratio = DEFAULT_EVICTION_RATIO;
     double eviction_high_watermark_ratio =
         DEFAULT_EVICTION_HIGH_WATERMARK_RATIO;
@@ -776,7 +776,7 @@ class MasterServiceConfig {
         default_kv_soft_pin_ttl = config.default_kv_soft_pin_ttl;
         allow_evict_soft_pinned_objects =
             config.allow_evict_soft_pinned_objects;
-        enable_group_eviction = config.enable_group_eviction;
+        enable_group_grant_lease = config.enable_group_grant_lease;
         eviction_ratio = config.eviction_ratio;
         eviction_high_watermark_ratio = config.eviction_high_watermark_ratio;
         view_version = config.view_version;
@@ -832,7 +832,7 @@ inline MasterServiceConfig MasterServiceConfigBuilder::build() const {
     config.default_kv_lease_ttl = default_kv_lease_ttl_;
     config.default_kv_soft_pin_ttl = default_kv_soft_pin_ttl_;
     config.allow_evict_soft_pinned_objects = allow_evict_soft_pinned_objects_;
-    config.enable_group_eviction = enable_group_eviction_;
+    config.enable_group_grant_lease = enable_group_grant_lease_;
     config.eviction_ratio = eviction_ratio_;
     config.eviction_high_watermark_ratio = eviction_high_watermark_ratio_;
     config.view_version = view_version_;
@@ -889,6 +889,7 @@ struct InProcMasterConfig {
     std::optional<uint64_t> default_kv_lease_ttl;
     std::optional<bool> enable_offload;
     std::optional<bool> enable_group_eviction;
+    std::optional<bool> enable_group_grant_lease;
     std::optional<bool> enable_cxl;
     std::optional<std::string> cxl_path;
     std::optional<size_t> cxl_size;
@@ -907,6 +908,7 @@ class InProcMasterConfigBuilder {
     std::optional<uint64_t> default_kv_lease_ttl_ = std::nullopt;
     std::optional<bool> enable_offload_ = std::nullopt;
     std::optional<bool> enable_group_eviction_ = std::nullopt;
+    std::optional<bool> enable_group_grant_lease_ = std::nullopt;
     std::optional<bool> enable_cxl_ = std::nullopt;
     std::optional<std::string> cxl_path_ = std::nullopt;
     std::optional<size_t> cxl_size_ = std::nullopt;
@@ -945,6 +947,11 @@ class InProcMasterConfigBuilder {
 
     InProcMasterConfigBuilder& set_enable_group_eviction(bool enable) {
         enable_group_eviction_ = enable;
+        return *this;
+    }
+
+    InProcMasterConfigBuilder& set_enable_group_grant_lease(bool enable) {
+        enable_group_grant_lease_ = enable;
         return *this;
     }
 
@@ -999,6 +1006,7 @@ inline InProcMasterConfig InProcMasterConfigBuilder::build() const {
     config.default_kv_lease_ttl = default_kv_lease_ttl_;
     config.enable_offload = enable_offload_;
     config.enable_group_eviction = enable_group_eviction_;
+    config.enable_group_grant_lease = enable_group_grant_lease_;
     config.enable_cxl = enable_cxl_;
     config.cxl_path = cxl_path_;
     config.cxl_size = cxl_size_;

@@ -74,9 +74,9 @@ class InProcMaster {
             wms_cfg.default_kv_lease_ttl = default_kv_lease_ttl;
             wms_cfg.default_kv_soft_pin_ttl = DEFAULT_KV_SOFT_PIN_TTL_MS;
             wms_cfg.allow_evict_soft_pinned_objects = true;
-            wms_cfg.enable_group_eviction =
-                config.enable_group_eviction.has_value()
-                    ? config.enable_group_eviction.value()
+            wms_cfg.enable_group_grant_lease =
+                config.enable_group_grant_lease.has_value()
+                    ? config.enable_group_grant_lease.value()
                     : false;
             wms_cfg.enable_metric_reporting = false;
             wms_cfg.enable_offload = config.enable_offload.has_value()
