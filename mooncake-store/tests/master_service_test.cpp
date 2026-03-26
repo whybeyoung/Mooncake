@@ -78,6 +78,15 @@ class MasterServiceTest : public ::testing::Test {
         return service.getShardIndex(key);
     }
 
+    bool IsSoftPinned(const MasterService& service,
+                      const std::string& key) const {
+        MasterService::MetadataAccessorRO accessor(&service, key);
+        if (!accessor.Exists()) {
+            return false;
+        }
+        return accessor.Get().IsSoftPinned();
+    }
+
     std::vector<Replica::Descriptor> replica_list;
 
     void TearDown() override { google::ShutdownGoogleLogging(); }
@@ -843,9 +852,7 @@ TEST_F(MasterServiceTest, GroupGrantLeaseRefreshesSoftPinForPeers) {
     std::this_thread::sleep_for(
         std::chrono::milliseconds(kv_lease_ttl + 50));
 
-    MasterService::MetadataAccessorRO peer_accessor(service_.get(), peer_key);
-    ASSERT_TRUE(peer_accessor.Exists());
-    EXPECT_TRUE(peer_accessor.Get().IsSoftPinned());
+    EXPECT_TRUE(IsSoftPinned(*service_, peer_key));
 }
 
 TEST_F(MasterServiceTest, GetReplicaListByRegexComplex) {
