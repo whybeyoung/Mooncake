@@ -3085,7 +3085,7 @@ void MasterService::BatchEvict(double evict_ratio_target,
     }
 
     if (enable_group_eviction_) {
-        const auto now = std::chrono::system_clock::now();
+        auto now = std::chrono::system_clock::now();
         long evicted_count = 0;
         long selected_seed_count = 0;
         long object_count = 0;
