@@ -240,6 +240,16 @@ MasterMetricManager::MasterMetricManager()
                          "Total number of keys evicted"),
       evicted_size_("master_evicted_size_bytes",
                     "Total bytes of evicted objects"),
+      group_ttl_collateral_lease_renewals_(
+          "master_group_ttl_collateral_lease_renewals_total",
+          "Total number of peer keys whose leases were renewed through group "
+          "TTL"),
+      group_ttl_collateral_evictions_(
+          "master_group_ttl_collateral_evictions_total",
+          "Total number of peer keys evicted through group TTL"),
+      group_ttl_group_count_(
+          "master_group_ttl_group_count",
+          "Current number of groups tracked by group TTL"),
 
       // Initialize Discarded Replicas Counters
       put_start_discard_cnt_("master_put_start_discard_cnt",
@@ -442,6 +452,9 @@ void MasterMetricManager::update_metrics_for_zero_output() {
     eviction_attempts_.inc(0);
     evicted_key_count_.inc(0);
     evicted_size_.inc(0);
+    group_ttl_collateral_lease_renewals_.inc(0);
+    group_ttl_collateral_evictions_.inc(0);
+    group_ttl_group_count_.update(0);
 
     // Update PutStart Discard Metrics
     put_start_discard_cnt_.inc(0);
@@ -1079,6 +1092,28 @@ void MasterMetricManager::inc_eviction_success(int64_t key_count,
 
 void MasterMetricManager::inc_eviction_fail() { eviction_attempts_.inc(); }
 
+void MasterMetricManager::inc_group_ttl_collateral_lease_renewals(
+    int64_t key_count) {
+    group_ttl_collateral_lease_renewals_.inc(key_count);
+}
+
+void MasterMetricManager::inc_group_ttl_collateral_evictions(
+    int64_t key_count) {
+    group_ttl_collateral_evictions_.inc(key_count);
+}
+
+void MasterMetricManager::inc_group_ttl_group_count(int64_t val) {
+    group_ttl_group_count_.inc(val);
+}
+
+void MasterMetricManager::dec_group_ttl_group_count(int64_t val) {
+    group_ttl_group_count_.dec(val);
+}
+
+void MasterMetricManager::reset_group_ttl_group_count() {
+    group_ttl_group_count_.update(0);
+}
+
 int64_t MasterMetricManager::get_eviction_success() {
     return eviction_success_.value();
 }
@@ -1093,6 +1128,18 @@ int64_t MasterMetricManager::get_evicted_key_count() {
 
 int64_t MasterMetricManager::get_evicted_size() {
     return evicted_size_.value();
+}
+
+int64_t MasterMetricManager::get_group_ttl_collateral_lease_renewals() {
+    return group_ttl_collateral_lease_renewals_.value();
+}
+
+int64_t MasterMetricManager::get_group_ttl_collateral_evictions() {
+    return group_ttl_collateral_evictions_.value();
+}
+
+int64_t MasterMetricManager::get_group_ttl_group_count() {
+    return group_ttl_group_count_.value();
 }
 
 // PutStart Discard Metrics Getters
@@ -1368,6 +1415,9 @@ std::string MasterMetricManager::serialize_metrics() {
     serialize_metric(eviction_attempts_);
     serialize_metric(evicted_key_count_);
     serialize_metric(evicted_size_);
+    serialize_metric(group_ttl_collateral_lease_renewals_);
+    serialize_metric(group_ttl_collateral_evictions_);
+    serialize_metric(group_ttl_group_count_);
 
     // Serialize PutStart Discard Metrics
     serialize_metric(put_start_discard_cnt_);
@@ -1556,6 +1606,11 @@ std::string MasterMetricManager::get_summary_string() {
     int64_t eviction_attempts = eviction_attempts_.value();
     int64_t evicted_key_count = evicted_key_count_.value();
     int64_t evicted_size = evicted_size_.value();
+    int64_t group_ttl_collateral_lease_renewals =
+        group_ttl_collateral_lease_renewals_.value();
+    int64_t group_ttl_collateral_evictions =
+        group_ttl_collateral_evictions_.value();
+    int64_t group_ttl_group_count = group_ttl_group_count_.value();
 
     // Ping counters
     int64_t ping = ping_requests_.value();
@@ -1677,6 +1732,11 @@ std::string MasterMetricManager::get_summary_string() {
        << ", "
        << "keys=" << evicted_key_count << ", "
        << "size=" << byte_size_to_string(evicted_size);
+    ss << " | GroupTTL: "
+       << "groups=" << group_ttl_group_count << ", "
+       << "collateral_lease_keys=" << group_ttl_collateral_lease_renewals
+       << ", "
+       << "collateral_evicted_keys=" << group_ttl_collateral_evictions;
 
     // Discard summary
     ss << " | Discard: "

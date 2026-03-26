@@ -661,6 +661,7 @@ TEST_F(MasterServiceTest, GroupIndexRegisterAndRemove) {
 
     put_object(*service_, client_id, "group1_pprank0_layer0");
     put_object(*service_, client_id, "group1_pprank1_layer0");
+    EXPECT_EQ(MasterMetricManager::instance().get_group_ttl_group_count(), 1);
 
     auto members = GetGroupMembers(*service_, "group1_pprank0_layer0");
     EXPECT_EQ(members.size(), 2);
@@ -671,6 +672,11 @@ TEST_F(MasterServiceTest, GroupIndexRegisterAndRemove) {
     auto remaining_members = GetGroupMembers(*service_, "group1_pprank1_layer0");
     EXPECT_EQ(remaining_members.size(), 1);
     EXPECT_EQ(remaining_members.front(), "group1_pprank1_layer0");
+    EXPECT_EQ(MasterMetricManager::instance().get_group_ttl_group_count(), 1);
+
+    auto remove_result2 = service_->Remove("group1_pprank1_layer0");
+    ASSERT_TRUE(remove_result2.has_value());
+    EXPECT_EQ(MasterMetricManager::instance().get_group_ttl_group_count(), 0);
 }
 
 TEST_F(MasterServiceTest, GroupTTLDisabledOnlyRenewsSeedKey) {
@@ -733,6 +739,30 @@ TEST_F(MasterServiceTest, GroupTTLRenewsWholeGroupOnGetReplicaList) {
     EXPECT_TRUE(cleared_keys.contains(other_key));
     EXPECT_FALSE(cleared_keys.contains(seed_key));
     EXPECT_FALSE(cleared_keys.contains(peer_key));
+}
+
+TEST_F(MasterServiceTest, GroupTTLMetricsTrackLeaseRenewal) {
+    auto service_ = std::make_unique<MasterService>(
+        MasterServiceConfig::builder()
+            .set_enable_group_ttl(true)
+            .set_default_kv_lease_ttl(200)
+            .build());
+    [[maybe_unused]] const auto context = PrepareSimpleSegment(*service_);
+    const UUID client_id = generate_uuid();
+
+    const auto before =
+        MasterMetricManager::instance()
+            .get_group_ttl_collateral_lease_renewals();
+    put_object(*service_, client_id, "group1_seed");
+    put_object(*service_, client_id, "group1_peer");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    ASSERT_TRUE(service_->GetReplicaList("group1_seed").has_value());
+
+    const auto after =
+        MasterMetricManager::instance()
+            .get_group_ttl_collateral_lease_renewals();
+    EXPECT_EQ(after - before, 1);
 }
 
 TEST_F(MasterServiceTest, GroupTTLNoUnderscoreOnlyRenewsSelf) {
@@ -922,6 +952,56 @@ TEST_F(MasterServiceTest, GroupTTLBatchEvictEvictsWholeGroup) {
     EXPECT_FALSE(seed_exists.value());
     EXPECT_FALSE(peer_exists.value());
     EXPECT_TRUE(other_exists.value());
+}
+
+TEST_F(MasterServiceTest, GroupTTLMetricsTrackGroupEviction) {
+    auto service_ = std::make_unique<MasterService>(
+        MasterServiceConfig::builder()
+            .set_enable_group_ttl(true)
+            .set_default_kv_lease_ttl(0)
+            .build());
+    [[maybe_unused]] const auto context = PrepareSimpleSegment(*service_);
+    const UUID client_id = generate_uuid();
+
+    const auto before =
+        MasterMetricManager::instance().get_group_ttl_collateral_evictions();
+    put_object(*service_, client_id, "group1_seed");
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    put_object(*service_, client_id, "group1_peer");
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    put_object(*service_, client_id, "group2_other");
+
+    RunBatchEvict(*service_, 0.34, 0.34);
+
+    const auto after =
+        MasterMetricManager::instance().get_group_ttl_collateral_evictions();
+    EXPECT_EQ(after - before, 1);
+    EXPECT_NE(MasterMetricManager::instance().get_summary_string().find(
+                  "GroupTTL: collateral_lease_keys="),
+              std::string::npos);
+}
+
+TEST_F(MasterServiceTest, GroupTTLMetricsTrackCurrentGroupCount) {
+    auto service_ = std::make_unique<MasterService>(
+        MasterServiceConfig::builder().set_enable_group_ttl(true).build());
+    [[maybe_unused]] const auto context = PrepareSimpleSegment(*service_);
+    const UUID client_id = generate_uuid();
+
+    EXPECT_EQ(MasterMetricManager::instance().get_group_ttl_group_count(), 0);
+    put_object(*service_, client_id, "group1_seed");
+    EXPECT_EQ(MasterMetricManager::instance().get_group_ttl_group_count(), 1);
+    put_object(*service_, client_id, "group1_peer");
+    EXPECT_EQ(MasterMetricManager::instance().get_group_ttl_group_count(), 1);
+    put_object(*service_, client_id, "group2_seed");
+    EXPECT_EQ(MasterMetricManager::instance().get_group_ttl_group_count(), 2);
+
+    ASSERT_TRUE(service_->Remove("group1_seed").has_value());
+    EXPECT_EQ(MasterMetricManager::instance().get_group_ttl_group_count(), 2);
+    ASSERT_TRUE(service_->Remove("group1_peer").has_value());
+    EXPECT_EQ(MasterMetricManager::instance().get_group_ttl_group_count(), 1);
+
+    auto summary = MasterMetricManager::instance().get_summary_string();
+    EXPECT_NE(summary.find("GroupTTL: groups=1"), std::string::npos);
 }
 
 TEST_F(MasterServiceTest, GetReplicaListByRegexComplex) {

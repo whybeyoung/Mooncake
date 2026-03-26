@@ -212,12 +212,20 @@ class MasterMetricManager {
     // Eviction Metrics
     void inc_eviction_success(int64_t key_count, int64_t size);
     void inc_eviction_fail();  // not a single object is evicted
+    void inc_group_ttl_collateral_lease_renewals(int64_t key_count = 1);
+    void inc_group_ttl_collateral_evictions(int64_t key_count = 1);
+    void inc_group_ttl_group_count(int64_t val = 1);
+    void dec_group_ttl_group_count(int64_t val = 1);
+    void reset_group_ttl_group_count();
 
     // Eviction Metrics Getters
     int64_t get_eviction_success();
     int64_t get_eviction_attempts();
     int64_t get_evicted_key_count();
     int64_t get_evicted_size();
+    int64_t get_group_ttl_collateral_lease_renewals();
+    int64_t get_group_ttl_collateral_evictions();
+    int64_t get_group_ttl_group_count();
 
     // PutStart Discard Metrics
     void inc_put_start_discard_cnt(int64_t count, int64_t size);
@@ -421,6 +429,9 @@ class MasterMetricManager {
     ylt::metric::counter_t eviction_attempts_;
     ylt::metric::counter_t evicted_key_count_;
     ylt::metric::counter_t evicted_size_;
+    ylt::metric::counter_t group_ttl_collateral_lease_renewals_;
+    ylt::metric::counter_t group_ttl_collateral_evictions_;
+    ylt::metric::gauge_t group_ttl_group_count_;
 
     // PutStart Discard Metrics
     ylt::metric::counter_t put_start_discard_cnt_;

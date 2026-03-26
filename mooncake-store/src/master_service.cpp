@@ -266,8 +266,13 @@ void MasterService::RegisterKeyToGroupIndex(const std::string& key) {
 
     auto shard_idx = getGroupShardIndex(group_key.value());
     std::unique_lock lock(group_shards_[shard_idx].mutex);
+    auto [group_it, inserted] =
+        group_shards_[shard_idx].group_to_keys.try_emplace(group_key.value());
+    if (inserted) {
+        MasterMetricManager::instance().inc_group_ttl_group_count();
+    }
     group_shards_[shard_idx].key_to_group[key] = group_key.value();
-    group_shards_[shard_idx].group_to_keys[group_key.value()].insert(key);
+    group_it->second.insert(key);
 }
 
 void MasterService::RemoveKeyFromGroupIndex(const std::string& key) {
@@ -289,6 +294,7 @@ void MasterService::RemoveKeyFromGroupIndex(const std::string& key) {
     group_it->second.erase(key);
     if (group_it->second.empty()) {
         group_shards_[shard_idx].group_to_keys.erase(group_it);
+        MasterMetricManager::instance().dec_group_ttl_group_count();
     }
 }
 
@@ -325,6 +331,7 @@ void MasterService::RebuildGroupIndex() {
         shard.key_to_group.clear();
         shard.group_to_keys.clear();
     }
+    MasterMetricManager::instance().reset_group_ttl_group_count();
 
     for (size_t i = 0; i < kNumShards; ++i) {
         MetadataShardAccessorRO shard(this, i);
@@ -344,6 +351,7 @@ void MasterService::GrantLeaseToGroup(const std::string& key) {
         return;
     }
 
+    int64_t collateral_renewed_keys = 0;
     for (const auto& member_key : group_members) {
         MetadataAccessorRW accessor(this, member_key);
         if (!accessor.Exists()) {
@@ -352,6 +360,15 @@ void MasterService::GrantLeaseToGroup(const std::string& key) {
 
         accessor.Get().GrantLease(default_kv_lease_ttl_,
                                   default_kv_soft_pin_ttl_);
+        if (member_key != key) {
+            collateral_renewed_keys++;
+        }
+    }
+
+    if (collateral_renewed_keys > 0) {
+        MasterMetricManager::instance()
+            .inc_group_ttl_collateral_lease_renewals(
+                collateral_renewed_keys);
     }
 }
 
@@ -3274,13 +3291,16 @@ void MasterService::BatchEvict(double evict_ratio_target,
 
         for (const auto& seed_key : seed_keys) {
             auto group_members = GetGroupMembers(seed_key);
-            if (group_members.empty()) {
+            const bool has_group = !group_members.empty();
+            if (!has_group) {
                 group_members.push_back(seed_key);
             }
+            int64_t collateral_group_evicted_keys = 0;
 
             auto process_key =
                 [this, &processed_keys, &evicted_count, &total_freed_size,
-                 &evict_seed_replicas, &evict_group_peer_replicas](
+                 &collateral_group_evicted_keys, &evict_seed_replicas,
+                 &evict_group_peer_replicas](
                     const std::string& key, bool force_evict) -> size_t {
                 if (!processed_keys.insert(key).second) {
                     return 0;
@@ -3299,6 +3319,9 @@ void MasterService::BatchEvict(double evict_ratio_target,
                 if (erased_count > 0) {
                     evicted_count++;
                     total_freed_size += object_size * erased_count;
+                    if (force_evict) {
+                        collateral_group_evicted_keys++;
+                    }
                 }
 
                 if (!metadata.IsValid()) {
@@ -3319,6 +3342,12 @@ void MasterService::BatchEvict(double evict_ratio_target,
                     continue;
                 }
                 process_key(peer_key, true);
+            }
+
+            if (has_group && collateral_group_evicted_keys > 0) {
+                MasterMetricManager::instance()
+                    .inc_group_ttl_collateral_evictions(
+                        collateral_group_evicted_keys);
             }
         }
 
