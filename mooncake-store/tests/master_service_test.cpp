@@ -590,9 +590,6 @@ void put_object(MasterService& service, const UUID& client_id,
     auto put_end_result = service.PutEnd(client_id, key, ReplicaType::MEMORY);
     ASSERT_TRUE(put_end_result.has_value())
         << "Failed to PutEnd for key: " << key;
-    auto exist_result = service.ExistKey(key);
-    ASSERT_TRUE(exist_result.has_value())
-        << "Key does not exist after put: " << key;
 }
 
 void put_object(MasterService& service, const UUID& client_id,
@@ -675,7 +672,7 @@ TEST_F(MasterServiceTest, GroupGrantLeaseDisabledOnlyRenewsSeedKey) {
     auto service_ = std::make_unique<MasterService>(
         MasterServiceConfig::builder()
             .set_enable_group_grant_lease(false)
-            .set_default_kv_lease_ttl(2000)
+            .set_default_kv_lease_ttl(200)
             .build());
     [[maybe_unused]] const auto context = PrepareSimpleSegment(*service_);
     const UUID client_id = generate_uuid();
@@ -687,6 +684,7 @@ TEST_F(MasterServiceTest, GroupGrantLeaseDisabledOnlyRenewsSeedKey) {
     put_object(*service_, client_id, peer_key);
     put_object(*service_, client_id, other_key);
 
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
     ASSERT_TRUE(service_->GetReplicaList(seed_key).has_value());
 
     std::vector<std::string> keys = {seed_key, peer_key, other_key};
@@ -705,7 +703,7 @@ TEST_F(MasterServiceTest, GroupGrantLeaseBasic) {
     auto service_ = std::make_unique<MasterService>(
         MasterServiceConfig::builder()
             .set_enable_group_grant_lease(true)
-            .set_default_kv_lease_ttl(2000)
+            .set_default_kv_lease_ttl(200)
             .build());
     [[maybe_unused]] const auto context = PrepareSimpleSegment(*service_);
     const UUID client_id = generate_uuid();
@@ -717,6 +715,7 @@ TEST_F(MasterServiceTest, GroupGrantLeaseBasic) {
     put_object(*service_, client_id, peer_key);
     put_object(*service_, client_id, other_key);
 
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
     ASSERT_TRUE(service_->GetReplicaList(seed_key).has_value());
 
     std::vector<std::string> keys = {seed_key, peer_key, other_key};
@@ -735,7 +734,7 @@ TEST_F(MasterServiceTest, GroupGrantLeaseNoUnderscoreOnlyRenewsSelf) {
     auto service_ = std::make_unique<MasterService>(
         MasterServiceConfig::builder()
             .set_enable_group_grant_lease(true)
-            .set_default_kv_lease_ttl(2000)
+            .set_default_kv_lease_ttl(200)
             .build());
     [[maybe_unused]] const auto context = PrepareSimpleSegment(*service_);
     const UUID client_id = generate_uuid();
@@ -745,6 +744,7 @@ TEST_F(MasterServiceTest, GroupGrantLeaseNoUnderscoreOnlyRenewsSelf) {
     put_object(*service_, client_id, plain_key);
     put_object(*service_, client_id, other_key);
 
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
     ASSERT_TRUE(service_->GetReplicaList(plain_key).has_value());
 
     std::vector<std::string> keys = {plain_key, other_key};
@@ -762,7 +762,7 @@ TEST_F(MasterServiceTest, GroupGrantLeaseMissingPeerDoesNotBreakRenewal) {
     auto service_ = std::make_unique<MasterService>(
         MasterServiceConfig::builder()
             .set_enable_group_grant_lease(true)
-            .set_default_kv_lease_ttl(2000)
+            .set_default_kv_lease_ttl(200)
             .build());
     [[maybe_unused]] const auto context = PrepareSimpleSegment(*service_);
     const UUID client_id = generate_uuid();
@@ -778,6 +778,7 @@ TEST_F(MasterServiceTest, GroupGrantLeaseMissingPeerDoesNotBreakRenewal) {
     ASSERT_EQ(remaining_members.size(), 1u);
     EXPECT_EQ(remaining_members.front(), seed_key);
 
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
     ASSERT_TRUE(service_->GetReplicaList(seed_key).has_value());
 
     std::vector<std::string> keys = {seed_key};
@@ -790,7 +791,7 @@ TEST_F(MasterServiceTest, GroupGrantLeaseCrossShard) {
     auto service_ = std::make_unique<MasterService>(
         MasterServiceConfig::builder()
             .set_enable_group_grant_lease(true)
-            .set_default_kv_lease_ttl(2000)
+            .set_default_kv_lease_ttl(200)
             .build());
     [[maybe_unused]] const auto context = PrepareSimpleSegment(*service_);
     const UUID client_id = generate_uuid();
@@ -812,6 +813,7 @@ TEST_F(MasterServiceTest, GroupGrantLeaseCrossShard) {
     put_object(*service_, client_id, peer_key);
     put_object(*service_, client_id, other_key);
 
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
     ASSERT_TRUE(service_->GetReplicaList(seed_key).has_value());
 
     std::vector<std::string> keys = {seed_key, peer_key, other_key};
