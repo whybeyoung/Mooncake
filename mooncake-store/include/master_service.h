@@ -42,6 +42,7 @@ class EvictionStrategy;
 namespace test {
 class MasterServiceSnapshotTestBase;
 class SnapshotChildProcessTest;
+class MasterServiceTest;
 }  // namespace test
 
 /*
@@ -55,6 +56,7 @@ class MasterService {
     // Test friend class for snapshot/restore testing
     friend class test::MasterServiceSnapshotTestBase;
     friend class test::SnapshotChildProcessTest;
+    friend class test::MasterServiceTest;
 
    public:
     MasterService();
@@ -816,6 +818,27 @@ class MasterService {
     uint64_t ReleaseExpiredDiscardedReplicas(
         const std::chrono::system_clock::time_point& now);
 
+    // Group eviction helpers
+    static constexpr size_t kNumGroupShards = 64;
+    struct GroupShard {
+        mutable SharedMutex mutex;
+        std::unordered_map<std::string, std::string> key_to_group
+            GUARDED_BY(mutex);
+        std::unordered_map<std::string, std::unordered_set<std::string>>
+            group_to_keys GUARDED_BY(mutex);
+    };
+
+    size_t getGroupShardIndex(const std::string& group_key) const {
+        return std::hash<std::string>{}(group_key) % kNumGroupShards;
+    }
+
+    std::optional<std::string> ExtractGroupKey(const std::string& key) const;
+    void RegisterKeyToGroupIndex(const std::string& key);
+    void RemoveKeyFromGroupIndex(const std::string& key);
+    std::vector<std::string> GetGroupMembers(const std::string& key) const;
+    void RebuildGroupIndex();
+    std::array<GroupShard, kNumGroupShards> group_shards_;
+
     // Eviction thread function
     void EvictionThreadFunc();
 
@@ -826,6 +849,7 @@ class MasterService {
     const uint64_t default_kv_lease_ttl_;     // in milliseconds
     const uint64_t default_kv_soft_pin_ttl_;  // in milliseconds
     const bool allow_evict_soft_pinned_objects_;
+    const bool enable_group_eviction_;
 
     // Eviction related members
     std::atomic<bool> need_eviction_{
@@ -865,6 +889,7 @@ class MasterService {
             // Automatically clean up invalid handles
             if (it_ != shard_guard_->metadata.end()) {
                 if (service_->CleanupStaleHandles(it_->second)) {
+                    service_->RemoveKeyFromGroupIndex(key_);
                     this->Erase();
 
                     if (processing_it_ != shard_guard_->processing_keys.end()) {

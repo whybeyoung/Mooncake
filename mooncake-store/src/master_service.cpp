@@ -69,6 +69,7 @@ MasterService::MasterService(const MasterServiceConfig& config)
     : default_kv_lease_ttl_(config.default_kv_lease_ttl),
       default_kv_soft_pin_ttl_(config.default_kv_soft_pin_ttl),
       allow_evict_soft_pinned_objects_(config.allow_evict_soft_pinned_objects),
+      enable_group_eviction_(config.enable_group_eviction),
       eviction_ratio_(config.eviction_ratio),
       eviction_high_watermark_ratio_(config.eviction_high_watermark_ratio),
       client_live_ttl_sec_(config.client_live_ttl_sec),
@@ -240,6 +241,96 @@ MasterService::~MasterService() {
     }
     if (task_cleanup_thread_.joinable()) {
         task_cleanup_thread_.join();
+    }
+}
+
+std::optional<std::string> MasterService::ExtractGroupKey(
+    const std::string& key) const {
+    if (!enable_group_eviction_) {
+        return std::nullopt;
+    }
+
+    const auto pos = key.find('_');
+    if (pos == std::string::npos || pos == 0) {
+        return std::nullopt;
+    }
+
+    return key.substr(0, pos);
+}
+
+void MasterService::RegisterKeyToGroupIndex(const std::string& key) {
+    auto group_key = ExtractGroupKey(key);
+    if (!group_key.has_value()) {
+        return;
+    }
+
+    auto shard_idx = getGroupShardIndex(group_key.value());
+    std::unique_lock lock(group_shards_[shard_idx].mutex);
+    group_shards_[shard_idx].key_to_group[key] = group_key.value();
+    group_shards_[shard_idx].group_to_keys[group_key.value()].insert(key);
+}
+
+void MasterService::RemoveKeyFromGroupIndex(const std::string& key) {
+    auto group_key = ExtractGroupKey(key);
+    if (!group_key.has_value()) {
+        return;
+    }
+
+    auto shard_idx = getGroupShardIndex(group_key.value());
+    std::unique_lock lock(group_shards_[shard_idx].mutex);
+    group_shards_[shard_idx].key_to_group.erase(key);
+
+    auto group_it =
+        group_shards_[shard_idx].group_to_keys.find(group_key.value());
+    if (group_it == group_shards_[shard_idx].group_to_keys.end()) {
+        return;
+    }
+
+    group_it->second.erase(key);
+    if (group_it->second.empty()) {
+        group_shards_[shard_idx].group_to_keys.erase(group_it);
+    }
+}
+
+std::vector<std::string> MasterService::GetGroupMembers(
+    const std::string& key) const {
+    auto group_key = ExtractGroupKey(key);
+    if (!group_key.has_value()) {
+        return {};
+    }
+
+    auto shard_idx = getGroupShardIndex(group_key.value());
+    std::shared_lock lock(group_shards_[shard_idx].mutex);
+    auto key_it = group_shards_[shard_idx].key_to_group.find(key);
+    if (key_it == group_shards_[shard_idx].key_to_group.end()) {
+        return {};
+    }
+
+    auto group_it =
+        group_shards_[shard_idx].group_to_keys.find(key_it->second);
+    if (group_it == group_shards_[shard_idx].group_to_keys.end()) {
+        return {};
+    }
+
+    return {group_it->second.begin(), group_it->second.end()};
+}
+
+void MasterService::RebuildGroupIndex() {
+    if (!enable_group_eviction_) {
+        return;
+    }
+
+    for (auto& shard : group_shards_) {
+        std::unique_lock lock(shard.mutex);
+        shard.key_to_group.clear();
+        shard.group_to_keys.clear();
+    }
+
+    for (size_t i = 0; i < kNumShards; ++i) {
+        MetadataShardAccessorRO shard(this, i);
+        for (const auto& [key, metadata] : shard->metadata) {
+            RegisterKeyToGroupIndex(key);
+        }
     }
 }
 
@@ -776,6 +867,7 @@ auto MasterService::PutStart(const UUID& client_id, const std::string& key,
                     metadata.put_start_time + put_start_release_timeout_sec_);
             }
             shard->processing_keys.erase(key);
+            RemoveKeyFromGroupIndex(key);
             shard->metadata.erase(it);
         } else {
             LOG(INFO) << "key=" << key << ", info=object_already_exists";
@@ -835,6 +927,9 @@ auto MasterService::PutStart(const UUID& client_id, const std::string& key,
         std::piecewise_construct, std::forward_as_tuple(key),
         std::forward_as_tuple(client_id, now, total_length, std::move(replicas),
                               config.with_soft_pin, config.with_hard_pin));
+    RegisterKeyToGroupIndex(key);
+                              config.with_soft_pin, config.with_hard_pin));
+    RegisterKeyToGroupIndex(key);
     // Also insert the metadata into processing set for monitoring.
     shard->processing_keys.insert(key);
 
@@ -985,6 +1080,7 @@ auto MasterService::PutRevoke(const UUID& client_id, const std::string& key,
     }
 
     if (metadata.IsValid() == false) {
+        RemoveKeyFromGroupIndex(key);
         accessor.Erase();
     }
     return {};
@@ -1040,6 +1136,7 @@ auto MasterService::EvictDiskReplica(const UUID& client_id,
     }
 
     if (!metadata.IsValid()) {
+        RemoveKeyFromGroupIndex(key);
         accessor.Erase();
     }
     return {};
@@ -1507,6 +1604,7 @@ auto MasterService::Remove(const std::string& key, bool force)
     }
 
     // Remove object metadata
+    RemoveKeyFromGroupIndex(key);
     accessor.Erase();
     return {};
 }
@@ -1561,6 +1659,7 @@ auto MasterService::RemoveByRegex(const std::string& regex_pattern, bool force)
 
                 VLOG(1) << "key=" << it->first
                         << " matched by regex. Removing.";
+                RemoveKeyFromGroupIndex(it->first);
                 it = shard->metadata.erase(it);
                 removed_count++;
             } else {
@@ -1603,6 +1702,7 @@ long MasterService::RemoveAll(bool force) {
                 auto mem_rep_count =
                     it->second.CountReplicas(&Replica::fn_is_memory_replica);
                 total_freed_size += it->second.size * mem_rep_count;
+                RemoveKeyFromGroupIndex(it->first);
                 it = shard->metadata.erase(it);
                 removed_count++;
             } else {
@@ -2958,6 +3058,8 @@ void MasterService::RestoreState() {
             }
         }
 
+        RebuildGroupIndex();
+
         LOG(INFO) << "[Restore] Successfully restored state from snapshot: "
                   << state_id;
 
@@ -2980,6 +3082,235 @@ void MasterService::BatchEvict(double evict_ratio_target,
                    << ", evict_ratio_lowerbound=" << evict_ratio_lowerbound
                    << ", error=invalid_params";
         evict_ratio_lowerbound = evict_ratio_target;
+    }
+
+    if (enable_group_eviction_) {
+        const auto now = std::chrono::system_clock::now();
+        long evicted_count = 0;
+        long selected_seed_count = 0;
+        long object_count = 0;
+        uint64_t total_freed_size = 0;
+
+        std::vector<std::pair<std::chrono::system_clock::time_point,
+                              std::string>>
+            no_pin_objects;
+        std::vector<std::pair<std::chrono::system_clock::time_point,
+                              std::string>>
+            soft_pin_objects;
+        std::unordered_set<std::string> seed_keys;
+
+        auto can_evict_replicas = [](const ObjectMetadata& metadata) {
+            return metadata.HasReplica([](const Replica& replica) {
+                return replica.is_memory_replica() && replica.is_completed() &&
+                       replica.get_refcnt() == 0;
+            });
+        };
+
+        auto evict_seed_replicas = [](ObjectMetadata& metadata) {
+            return metadata.EraseReplicas([](const Replica& replica) {
+                return replica.is_memory_replica() && replica.is_completed() &&
+                       replica.get_refcnt() == 0;
+            });
+        };
+
+        auto evict_group_peer_replicas = [](ObjectMetadata& metadata) {
+            return metadata.EraseReplicas([](const Replica& replica) {
+                return replica.is_memory_replica() && replica.is_completed();
+            });
+        };
+
+        auto insert_seed_key =
+            [&seed_keys, &selected_seed_count](const std::string& key) {
+                if (seed_keys.insert(key).second) {
+                    selected_seed_count++;
+                    return true;
+                }
+                return false;
+            };
+
+        size_t start_idx = rand() % kNumShards;
+        std::shared_lock<std::shared_mutex> shared_lock(snapshot_mutex_);
+
+        for (size_t i = 0; i < kNumShards; i++) {
+            MetadataShardAccessorRW shard(this, (start_idx + i) % kNumShards);
+
+            DiscardExpiredProcessingReplicas(shard, now);
+            object_count += shard->metadata.size();
+
+            const long ideal_evict_num =
+                std::ceil(object_count * evict_ratio_target) -
+                selected_seed_count;
+
+            std::vector<std::pair<std::chrono::system_clock::time_point,
+                                  std::string>>
+                candidates;
+            for (const auto& [key, metadata] : shard->metadata) {
+                if (!metadata.IsLeaseExpired(now) ||
+                    !can_evict_replicas(metadata)) {
+                    continue;
+                }
+
+                if (!metadata.IsSoftPinned(now)) {
+                    if (ideal_evict_num > 0) {
+                        candidates.emplace_back(metadata.lease_timeout, key);
+                    } else {
+                        no_pin_objects.emplace_back(metadata.lease_timeout, key);
+                    }
+                } else if (allow_evict_soft_pinned_objects_) {
+                    soft_pin_objects.emplace_back(metadata.lease_timeout, key);
+                }
+            }
+
+            if (ideal_evict_num > 0 && !candidates.empty()) {
+                long evict_num =
+                    std::min(ideal_evict_num, (long)candidates.size());
+                std::nth_element(
+                    candidates.begin(), candidates.begin() + (evict_num - 1),
+                    candidates.end(),
+                    [](const auto& lhs, const auto& rhs) {
+                        return lhs.first < rhs.first;
+                    });
+                auto target_timeout = candidates[evict_num - 1].first;
+
+                for (const auto& candidate : candidates) {
+                    if (candidate.first <= target_timeout) {
+                        insert_seed_key(candidate.second);
+                    } else {
+                        no_pin_objects.push_back(candidate);
+                    }
+                }
+            }
+        }
+
+        uint64_t released_discarded_cnt = ReleaseExpiredDiscardedReplicas(now);
+
+        long target_evict_num =
+            std::ceil(object_count * evict_ratio_lowerbound) -
+            selected_seed_count - released_discarded_cnt;
+        target_evict_num =
+            std::min(target_evict_num, (long)no_pin_objects.size() +
+                                           (long)soft_pin_objects.size());
+
+        if (target_evict_num > 0) {
+            if (target_evict_num <= static_cast<long>(no_pin_objects.size())) {
+                std::nth_element(
+                    no_pin_objects.begin(),
+                    no_pin_objects.begin() + (target_evict_num - 1),
+                    no_pin_objects.end(),
+                    [](const auto& lhs, const auto& rhs) {
+                        return lhs.first < rhs.first;
+                    });
+                auto target_timeout = no_pin_objects[target_evict_num - 1].first;
+
+                for (const auto& candidate : no_pin_objects) {
+                    if (target_evict_num <= 0) {
+                        break;
+                    }
+                    if (candidate.first <= target_timeout &&
+                        insert_seed_key(candidate.second)) {
+                        target_evict_num--;
+                    }
+                }
+            } else if (!soft_pin_objects.empty()) {
+                for (const auto& candidate : no_pin_objects) {
+                    if (target_evict_num <= 0) {
+                        break;
+                    }
+                    if (insert_seed_key(candidate.second)) {
+                        target_evict_num--;
+                    }
+                }
+
+                if (target_evict_num > 0) {
+                    std::nth_element(
+                        soft_pin_objects.begin(),
+                        soft_pin_objects.begin() + (target_evict_num - 1),
+                        soft_pin_objects.end(),
+                        [](const auto& lhs, const auto& rhs) {
+                            return lhs.first < rhs.first;
+                        });
+                    auto target_timeout =
+                        soft_pin_objects[target_evict_num - 1].first;
+                    for (const auto& candidate : soft_pin_objects) {
+                        if (target_evict_num <= 0) {
+                            break;
+                        }
+                        if (candidate.first <= target_timeout &&
+                            insert_seed_key(candidate.second)) {
+                            target_evict_num--;
+                        }
+                    }
+                }
+            }
+        }
+
+        std::unordered_set<std::string> processed_keys;
+
+        for (const auto& seed_key : seed_keys) {
+            auto group_members = GetGroupMembers(seed_key);
+            if (group_members.empty()) {
+                group_members.push_back(seed_key);
+            }
+
+            auto process_key =
+                [this, &processed_keys, &evicted_count, &total_freed_size,
+                 &evict_seed_replicas, &evict_group_peer_replicas](
+                    const std::string& key, bool force_evict) -> size_t {
+                if (!processed_keys.insert(key).second) {
+                    return 0;
+                }
+
+                MetadataAccessorRW accessor(this, key);
+                if (!accessor.Exists()) {
+                    return 0;
+                }
+
+                auto& metadata = accessor.Get();
+                const auto object_size = metadata.size;
+                size_t erased_count = force_evict
+                                          ? evict_group_peer_replicas(metadata)
+                                          : evict_seed_replicas(metadata);
+                if (erased_count > 0) {
+                    evicted_count++;
+                    total_freed_size += object_size * erased_count;
+                }
+
+                if (!metadata.IsValid()) {
+                    RemoveKeyFromGroupIndex(key);
+                    accessor.Erase();
+                }
+
+                return erased_count;
+            };
+
+            size_t seed_erased = process_key(seed_key, false);
+            if (seed_erased == 0) {
+                continue;
+            }
+
+            for (const auto& peer_key : group_members) {
+                if (peer_key == seed_key) {
+                    continue;
+                }
+                process_key(peer_key, true);
+            }
+        }
+
+        if (evicted_count > 0 || released_discarded_cnt > 0) {
+            need_eviction_ = false;
+            MasterMetricManager::instance().inc_eviction_success(
+                evicted_count, total_freed_size);
+        } else {
+            if (object_count == 0) {
+                need_eviction_ = false;
+            }
+            MasterMetricManager::instance().inc_eviction_fail();
+        }
+        VLOG(1) << "action=evict_objects"
+                << ", evicted_count=" << evicted_count
+                << ", total_freed_size=" << total_freed_size
+                << ", group_eviction=true";
+        return;
     }
 
     auto now = std::chrono::system_clock::now();

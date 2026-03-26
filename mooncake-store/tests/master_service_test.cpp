@@ -53,6 +53,31 @@ class MasterServiceTest : public ::testing::Test {
         return {.segment_id = segment.id, .client_id = client_id};
     }
 
+    std::optional<std::string> ExtractGroupKey(
+        const MasterService& service, const std::string& key) const {
+        return service.ExtractGroupKey(key);
+    }
+
+    std::vector<std::string> GetGroupMembers(const MasterService& service,
+                                             const std::string& key) const {
+        return service.GetGroupMembers(key);
+    }
+
+    bool IsGroupIndexEmpty(const MasterService& service) const {
+        for (const auto& shard : service.group_shards_) {
+            std::shared_lock lock(shard.mutex);
+            if (!shard.key_to_group.empty() || !shard.group_to_keys.empty()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void RunBatchEvict(MasterService& service, double target,
+                       double lowerbound) const {
+        service.BatchEvict(target, lowerbound);
+    }
+
     std::vector<Replica::Descriptor> replica_list;
 
     void TearDown() override { google::ShutdownGoogleLogging(); }
@@ -561,6 +586,104 @@ void put_object(MasterService& service, const UUID& client_id,
     auto exist_result = service.ExistKey(key);
     ASSERT_TRUE(exist_result.has_value())
         << "Key does not exist after put: " << key;
+}
+
+TEST_F(MasterServiceTest, ExtractGroupKeyBasic) {
+    auto service_ = std::make_unique<MasterService>(
+        MasterServiceConfig::builder().set_enable_group_eviction(true).build());
+
+    auto group_key = ExtractGroupKey(*service_, "session123_pprank0_chunk1");
+    ASSERT_TRUE(group_key.has_value());
+    EXPECT_EQ(group_key.value(), "session123");
+
+    auto no_group = ExtractGroupKey(*service_, "nogroupkey");
+    EXPECT_FALSE(no_group.has_value());
+}
+
+TEST_F(MasterServiceTest, GroupEvictionDisabledNoIndexMaintenance) {
+    auto service_ = std::make_unique<MasterService>(MasterServiceConfig::builder()
+                                                        .set_enable_group_eviction(false)
+                                                        .build());
+    [[maybe_unused]] const auto context = PrepareSimpleSegment(*service_);
+    const UUID client_id = generate_uuid();
+
+    put_object(*service_, client_id, "group1_pprank0_layer0");
+    put_object(*service_, client_id, "group1_pprank1_layer0");
+
+    EXPECT_TRUE(IsGroupIndexEmpty(*service_));
+}
+
+TEST_F(MasterServiceTest, GroupIndexRegisterAndRemove) {
+    auto service_ = std::make_unique<MasterService>(
+        MasterServiceConfig::builder()
+            .set_enable_group_eviction(true)
+            .set_default_kv_lease_ttl(0)
+            .build());
+    [[maybe_unused]] const auto context = PrepareSimpleSegment(*service_);
+    const UUID client_id = generate_uuid();
+
+    put_object(*service_, client_id, "group1_pprank0_layer0");
+    put_object(*service_, client_id, "group1_pprank1_layer0");
+
+    auto members = GetGroupMembers(*service_, "group1_pprank0_layer0");
+    EXPECT_EQ(members.size(), 2);
+
+    auto remove_result = service_->Remove("group1_pprank0_layer0");
+    ASSERT_TRUE(remove_result.has_value());
+
+    auto remaining_members = GetGroupMembers(*service_, "group1_pprank1_layer0");
+    EXPECT_EQ(remaining_members.size(), 1);
+    EXPECT_EQ(remaining_members.front(), "group1_pprank1_layer0");
+}
+
+TEST_F(MasterServiceTest, GroupEvictionForcePastRefcnt) {
+    auto service_ = std::make_unique<MasterService>(
+        MasterServiceConfig::builder()
+            .set_enable_group_eviction(true)
+            .set_default_kv_lease_ttl(0)
+            .build());
+
+    constexpr size_t kBaseAddr = 0x100000000;
+    constexpr size_t kSegmentSize = 16 * 1024 * 1024;
+    [[maybe_unused]] const auto context1 =
+        PrepareSimpleSegment(*service_, "segment_1", kBaseAddr, kSegmentSize);
+    [[maybe_unused]] const auto context2 =
+        PrepareSimpleSegment(*service_, "segment_2", kBaseAddr, kSegmentSize);
+    const UUID client_id = generate_uuid();
+
+    ReplicateConfig config;
+    config.replica_num = 1;
+    config.preferred_segment = "segment_1";
+
+    ASSERT_TRUE(service_
+                    ->PutStart(client_id, "group1_pprank0_layer0", 1024, config)
+                    .has_value());
+    ASSERT_TRUE(service_
+                    ->PutEnd(client_id, "group1_pprank0_layer0",
+                             ReplicaType::MEMORY)
+                    .has_value());
+
+    ASSERT_TRUE(service_
+                    ->PutStart(client_id, "group1_pprank1_layer0", 1024, config)
+                    .has_value());
+    ASSERT_TRUE(service_
+                    ->PutEnd(client_id, "group1_pprank1_layer0",
+                             ReplicaType::MEMORY)
+                    .has_value());
+
+    auto copy_start_result = service_->CopyStart(
+        client_id, "group1_pprank1_layer0", "segment_1", {"segment_2"});
+    ASSERT_TRUE(copy_start_result.has_value());
+
+    RunBatchEvict(*service_, 1.0, 1.0);
+
+    auto seed_exists = service_->ExistKey("group1_pprank0_layer0");
+    ASSERT_TRUE(seed_exists.has_value());
+    EXPECT_FALSE(seed_exists.value());
+
+    auto peer_exists = service_->ExistKey("group1_pprank1_layer0");
+    ASSERT_TRUE(peer_exists.has_value());
+    EXPECT_FALSE(peer_exists.value());
 }
 
 TEST_F(MasterServiceTest, GetReplicaListByRegexComplex) {
