@@ -539,21 +539,26 @@ auto MasterService::UnmountSegment(const UUID& segment_id,
 auto MasterService::ExistKey(const std::string& key)
     -> tl::expected<bool, ErrorCode> {
     std::shared_lock<std::shared_mutex> shared_lock(snapshot_mutex_);
-    MetadataAccessorRO accessor(this, key);
-    if (!accessor.Exists()) {
-        VLOG(1) << "key=" << key << ", info=object_not_found";
-        return false;
-    }
+    {
+        MetadataAccessorRO accessor(this, key);
+        if (!accessor.Exists()) {
+            VLOG(1) << "key=" << key << ", info=object_not_found";
+            return false;
+        }
 
-    const auto& metadata = accessor.Get();
-    if (metadata.HasReplica(&Replica::fn_is_completed)) {
+        const auto& metadata = accessor.Get();
+        if (!metadata.HasReplica(&Replica::fn_is_completed)) {
+            return false;  // If no complete replica is found, return false
+        }
+
         // Grant a lease to the object as it may be further used by the
         // client.
         metadata.GrantLease(default_kv_lease_ttl_, default_kv_soft_pin_ttl_);
-        return true;
     }
 
-    return false;  // If no complete replica is found, return false
+    GrantLeaseToGroup(key);
+
+    return true;
 }
 
 std::vector<tl::expected<bool, ErrorCode>> MasterService::BatchExistKey(
