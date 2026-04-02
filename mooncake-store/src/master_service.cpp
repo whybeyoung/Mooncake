@@ -976,8 +976,6 @@ auto MasterService::PutStart(const UUID& client_id, const std::string& key,
         std::forward_as_tuple(client_id, now, total_length, std::move(replicas),
                               config.with_soft_pin, config.with_hard_pin));
     RegisterKeyToGroupIndex(key);
-                              config.with_soft_pin, config.with_hard_pin));
-    RegisterKeyToGroupIndex(key);
     // Also insert the metadata into processing set for monitoring.
     shard->processing_keys.insert(key);
 

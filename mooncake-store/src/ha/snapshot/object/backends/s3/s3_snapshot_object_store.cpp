@@ -49,6 +49,8 @@ S3SnapshotObjectStore::S3SnapshotObjectStore()
     LOG(INFO) << "S3SnapshotObjectStore initialized";
 }
 
+S3SnapshotObjectStore::~S3SnapshotObjectStore() = default;
+
 tl::expected<void, std::string> S3SnapshotObjectStore::UploadBuffer(
     const std::string& key, const std::vector<uint8_t>& buffer) {
     return impl_->s3_helper_.UploadBufferMultipart(key, buffer);
