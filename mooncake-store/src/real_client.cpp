@@ -16,6 +16,7 @@
 #include <optional>
 #include <vector>
 
+#include "pp_group_key.h"
 #include "real_client.h"
 #include "client_buffer.hpp"
 #include "config.h"
@@ -1169,18 +1170,46 @@ int RealClient::isExist(const std::string &key) {
 
 std::vector<int> RealClient::batchIsExist(
     const std::vector<std::string> &keys) {
-    auto internal_results = batchIsExist_internal(keys);
-    std::vector<int> results;
-    results.reserve(internal_results.size());
+    // Try to expand PP group keys: for keys containing
+    // "_pp_size_{N}_pp_rank_{R}", generate sibling keys for all PP ranks.
+    std::vector<std::string> expanded;
+    std::vector<int> expand_count;
+    bool has_pp = expandPPGroupKeys(keys, expanded, expand_count);
 
-    for (const auto &result : internal_results) {
-        if (result.has_value()) {
-            results.push_back(result.value() ? 1 : 0);  // 1 if exists, 0 if not
-        } else {
-            results.push_back(toInt(result.error()));
+    if (!has_pp) {
+        // Fast path: no PP group keys, query original keys directly
+        auto internal_results = batchIsExist_internal(keys);
+        std::vector<int> results;
+        results.reserve(internal_results.size());
+        for (const auto &result : internal_results) {
+            if (result.has_value()) {
+                results.push_back(result.value() ? 1 : 0);
+            } else {
+                results.push_back(toInt(result.error()));
+            }
         }
+        return results;
     }
 
+    // PP group path: query expanded keys, then AND-collapse per original key
+    auto internal_results = batchIsExist_internal(expanded);
+    std::vector<int> results;
+    results.reserve(keys.size());
+    size_t idx = 0;
+    for (size_t i = 0; i < keys.size(); ++i) {
+        int count = expand_count[i];
+        bool all_exist = true;
+        bool has_error = false;
+        for (int j = 0; j < count; ++j) {
+            if (!internal_results[idx].has_value()) {
+                has_error = true;
+            } else if (!internal_results[idx].value()) {
+                all_exist = false;
+            }
+            ++idx;
+        }
+        results.push_back(has_error ? -1 : (all_exist ? 1 : 0));
+    }
     return results;
 }
 
