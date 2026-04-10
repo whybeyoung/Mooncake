@@ -11,6 +11,7 @@
 
 #include "real_client.h"
 #include "dummy_client.h"
+#include "pp_group_key.h"
 #include "utils.h"
 #include "utils/scoped_vlog_timer.h"
 #include "rpc_types.h"
@@ -417,21 +418,52 @@ int DummyClient::isExist(const std::string& key) {
 
 std::vector<int> DummyClient::batchIsExist(
     const std::vector<std::string>& keys) {
-    auto internal_results =
-        invoke_batch_rpc<&RealClient::batchIsExist_internal, bool>(keys.size(),
-                                                                   keys);
-    std::vector<int> results;
-    results.reserve(internal_results.size());
+    // Try to expand PP group keys: for keys containing
+    // "_pp_size_{N}_pp_rank_{R}", generate sibling keys for all PP ranks.
+    std::vector<std::string> expanded;
+    std::vector<int> expand_count;
+    bool has_pp = expandPPGroupKeys(keys, expanded, expand_count);
 
-    for (const auto& result : internal_results) {
-        if (result.has_value()) {
-            results.push_back(result.value() ? 1 : 0);
-        } else {
-            LOG(ERROR) << "Batch isExist failed: " << toString(result.error());
-            results.push_back(-1);
+    if (!has_pp) {
+        // Fast path: no PP group keys, query original keys directly
+        auto internal_results =
+            invoke_batch_rpc<&RealClient::batchIsExist_internal, bool>(
+                keys.size(), keys);
+        std::vector<int> results;
+        results.reserve(internal_results.size());
+        for (const auto& result : internal_results) {
+            if (result.has_value()) {
+                results.push_back(result.value() ? 1 : 0);
+            } else {
+                LOG(ERROR) << "Batch isExist failed: "
+                           << toString(result.error());
+                results.push_back(-1);
+            }
         }
+        return results;
     }
 
+    // PP group path: query expanded keys, then AND-collapse per original key
+    auto internal_results =
+        invoke_batch_rpc<&RealClient::batchIsExist_internal, bool>(
+            expanded.size(), expanded);
+    std::vector<int> results;
+    results.reserve(keys.size());
+    size_t idx = 0;
+    for (size_t i = 0; i < keys.size(); ++i) {
+        int count = expand_count[i];
+        bool all_exist = true;
+        bool has_error = false;
+        for (int j = 0; j < count; ++j) {
+            if (!internal_results[idx].has_value()) {
+                has_error = true;
+            } else if (!internal_results[idx].value()) {
+                all_exist = false;
+            }
+            ++idx;
+        }
+        results.push_back(has_error ? -1 : (all_exist ? 1 : 0));
+    }
     return results;
 }
 
