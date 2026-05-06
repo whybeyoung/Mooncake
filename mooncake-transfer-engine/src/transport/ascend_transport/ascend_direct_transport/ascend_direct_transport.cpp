@@ -1129,24 +1129,41 @@ int AscendDirectTransport::checkAndConnect(
                 << target_adxl_engine_name;
         return 0;
     }
+    LOG(INFO) << "Connecting adxl engine, local=" << local_adxl_engine_name_
+              << ", target=" << target_adxl_engine_name
+              << ", connect_timeout_ms=" << connect_timeout_
+              << ", auto_connect=" << auto_connect_
+              << ", connected_count=" << connected_segments_.size();
     auto start = std::chrono::steady_clock::now();
     auto status =
         adxl_->Connect(target_adxl_engine_name.c_str(), connect_timeout_);
+    auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                          std::chrono::steady_clock::now() - start)
+                          .count();
     if (status == adxl::TIMEOUT) {
         LOG(ERROR) << "Connect timeout to: " << target_adxl_engine_name
-                   << ", you can increase the timeout duration to reduce "
-                      "the ASCEND_CONNECT_TIMEOUT environment variable.";
+                   << ", local=" << local_adxl_engine_name_
+                   << ", connect_timeout_ms=" << connect_timeout_
+                   << ", elapsed_us=" << elapsed_us
+                   << ", connected_count=" << connected_segments_.size()
+                   << ". You can increase the timeout duration via the "
+                      "ASCEND_CONNECT_TIMEOUT environment variable.";
     } else if (status != adxl::SUCCESS) {
         LOG(ERROR) << "Failed to connect to target: " << target_adxl_engine_name
-                   << ", status: " << status;
+                   << ", local=" << local_adxl_engine_name_
+                   << ", status=" << status
+                   << ", connect_timeout_ms=" << connect_timeout_
+                   << ", elapsed_us=" << elapsed_us
+                   << ", connected_count=" << connected_segments_.size()
+                   << ", errmsg="
+                   << (aclGetRecentErrMsg() ? aclGetRecentErrMsg() : "");
         return -1;
     }
     connected_segments_.emplace(target_adxl_engine_name);
-    auto count = std::chrono::duration_cast<std::chrono::microseconds>(
-                     std::chrono::steady_clock::now() - start)
-                     .count();
     LOG(INFO) << "Connected to segment: " << target_adxl_engine_name
-              << ", cost:" << count << " us.";
+              << ", local=" << local_adxl_engine_name_
+              << ", cost_us=" << elapsed_us
+              << ", connected_count=" << connected_segments_.size();
     return 0;
 }
 

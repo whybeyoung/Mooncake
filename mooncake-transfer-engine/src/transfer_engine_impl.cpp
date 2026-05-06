@@ -443,13 +443,44 @@ int TransferEngineImpl::removeLocalSegment(const std::string& segment_name) {
 
 bool TransferEngineImpl::checkOverlap(void* addr, uint64_t length) {
     std::shared_lock<std::shared_mutex> lock(mutex_);
+    auto new_start = reinterpret_cast<uintptr_t>(addr);
+    auto new_end = new_start + length;
+    bool found_overlap = false;
+    int overlap_idx = 0;
     for (auto& local_memory_region : local_memory_regions_) {
-        if (overlap(addr, length, local_memory_region.addr,
-                    local_memory_region.length)) {
-            return true;
+        if (!overlap(addr, length, local_memory_region.addr,
+                     local_memory_region.length)) {
+            continue;
         }
+        found_overlap = true;
+        auto exist_start =
+            reinterpret_cast<uintptr_t>(local_memory_region.addr);
+        auto exist_end = exist_start + local_memory_region.length;
+        const char* relation = "partial";
+        if (new_start >= exist_start && new_end <= exist_end) {
+            relation = (new_start == exist_start && new_end == exist_end)
+                           ? "exact_dup"
+                           : "fully_contained_in_existing";
+        } else if (exist_start >= new_start && exist_end <= new_end) {
+            relation = "fully_contains_existing";
+        } else if (new_start < exist_start) {
+            relation = "partial_left";  // new spans into existing's start
+        } else {
+            relation = "partial_right";  // new spans out of existing's end
+        }
+        LOG(ERROR) << "Memory region overlap detected[" << overlap_idx++
+                   << "]. new=[0x" << std::hex << new_start << ", 0x"
+                   << new_end << ") len=" << std::dec << length
+                   << ", existing=[0x" << std::hex << exist_start << ", 0x"
+                   << exist_end << ") len=" << std::dec
+                   << local_memory_region.length
+                   << ", relation=" << relation
+                   << ", existing_location=" << local_memory_region.location
+                   << ", existing_remote_accessible="
+                   << local_memory_region.remote_accessible
+                   << ", total_existing_regions=" << local_memory_regions_.size();
     }
-    return false;
+    return found_overlap;
 }
 
 int TransferEngineImpl::registerLocalMemory(void* addr, size_t length,
@@ -458,7 +489,9 @@ int TransferEngineImpl::registerLocalMemory(void* addr, size_t length,
                                             bool update_metadata) {
     if (checkOverlap(addr, length)) {
         LOG(ERROR)
-            << "Transfer Engine does not support overlapped memory region";
+            << "Transfer Engine does not support overlapped memory region "
+               "(via registerLocalMemory), location="
+            << location;
         return ERR_ADDRESS_OVERLAPPED;
     }
     if (length == 0) {
@@ -501,7 +534,9 @@ int TransferEngineImpl::registerLocalMemoryBatch(
     for (auto& buffer : buffer_list) {
         if (checkOverlap(buffer.addr, buffer.length)) {
             LOG(ERROR)
-                << "Transfer Engine does not support overlapped memory region";
+                << "Transfer Engine does not support overlapped memory region "
+                   "(via registerLocalMemoryBatch), batch_size="
+                << buffer_list.size() << ", location=" << location;
             return ERR_ADDRESS_OVERLAPPED;
         }
     }
