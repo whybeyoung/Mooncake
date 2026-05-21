@@ -65,6 +65,13 @@ if (USE_MNNVL OR NOT WITH_NVIDIA_PEERMEM)
   add_subdirectory(nvlink-allocator)
 endif()
 
+# 2 MB-aligned NPU allocator for CANN HCCL IPC RMA (ADXL RegisterMem). Mirrors
+# the nvlink-allocator pattern: produces ascend_allocator.so that exports
+# mc_ascend_malloc / mc_ascend_free for torch_npu's NPUPluggableAllocator.
+if (USE_ASCEND OR USE_ASCEND_DIRECT)
+  add_subdirectory(ascend-allocator)
+endif()
+
 if (USE_TENT)
   add_subdirectory(tent)
   add_subdirectory(benchmark)

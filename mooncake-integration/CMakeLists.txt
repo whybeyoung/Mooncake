@@ -76,6 +76,18 @@ if(USE_MNNVL)
     )
 endif()
 
+# Ascend 2 MB-aligned allocator (mirrors the nvlink_allocator install rule).
+# Only packaged when an Ascend transport is enabled; old wheels remain
+# bit-identical when neither USE_ASCEND nor USE_ASCEND_DIRECT is set.
+set(ASCEND_ALLOCATOR_SO_PATH "${CMAKE_BINARY_DIR}/mooncake-transfer-engine/ascend-allocator/ascend_allocator.so")
+if(USE_ASCEND OR USE_ASCEND_DIRECT)
+    message(STATUS "Ascend transport enabled, ascend_allocator.so will be installed in the Python package")
+    install(FILES
+        "${ASCEND_ALLOCATOR_SO_PATH}"
+        DESTINATION ${PYTHON_SYS_PATH}/${PYTHON_PACKAGE_NAME}
+    )
+endif()
+
 if (WITH_STORE)
     pybind11_add_module(store ${SOURCES} ${CACHE_ALLOCATOR_SOURCES}
         store/store_py.cpp
