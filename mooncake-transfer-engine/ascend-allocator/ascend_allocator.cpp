@@ -45,6 +45,18 @@
 #include <stdint.h>
 #include <stdio.h>
 
+// ACL_MEM_MALLOC_HUGE_ONLY is the only memory policy this allocator
+// supports; without it the 2 MB-aligned huge-page contract cannot be
+// satisfied. If the active CANN runtime is too old to expose this enum,
+// the compile must fail loudly here — not later inside aclrtMalloc with a
+// less obvious error — so the operator immediately knows to upgrade CANN.
+static_assert(
+    static_cast<int>(ACL_MEM_MALLOC_HUGE_ONLY) ==
+        static_cast<int>(ACL_MEM_MALLOC_HUGE_ONLY),
+    "ascend_allocator requires ACL_MEM_MALLOC_HUGE_ONLY from CANN. "
+    "Upgrade the CANN toolkit to a release that exposes this aclrtMemMallocPolicy "
+    "enumerator (huge-page allocation path).");
+
 namespace {
 
 // RAII guard: switch the calling thread's NPU device to `target_device`
