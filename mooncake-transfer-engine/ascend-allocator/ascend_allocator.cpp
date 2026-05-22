@@ -45,6 +45,71 @@
 #include <stdint.h>
 #include <stdio.h>
 
+namespace {
+
+// RAII guard: switch the calling thread's NPU device to `target_device`
+// for the duration of an aclrtMalloc / aclrtFree call, then restore the
+// previous device on scope exit. Without this guard, mc_ascend_malloc /
+// mc_ascend_free would silently mutate the caller's current device, which
+// is observable by every subsequent ACL call on this thread.
+class DeviceGuard {
+   public:
+    explicit DeviceGuard(int target_device)
+        : target_device_(target_device), ok_(false) {
+        int cur = -1;
+        aclError ret = aclrtGetDevice(&cur);
+        if (ret == ACL_ERROR_NONE) {
+            prev_device_ = cur;
+            have_prev_ = true;
+            if (cur == target_device_) {
+                // Already on target — no switch needed, nothing to restore.
+                ok_ = true;
+                return;
+            }
+        }
+        ret = aclrtSetDevice(target_device_);
+        if (ret != ACL_ERROR_NONE) {
+            fprintf(stderr,
+                    "[mc_ascend_allocator] aclrtSetDevice(%d) failed, ret=%d\n",
+                    target_device_, ret);
+            return;
+        }
+        switched_ = true;
+        ok_ = true;
+    }
+
+    ~DeviceGuard() {
+        if (!switched_) {
+            return;
+        }
+        // Only restore if we actually changed and have a meaningful prev.
+        if (!have_prev_ || prev_device_ < 0) {
+            return;
+        }
+        aclError ret = aclrtSetDevice(prev_device_);
+        if (ret != ACL_ERROR_NONE) {
+            fprintf(stderr,
+                    "[mc_ascend_allocator] restore aclrtSetDevice(%d)"
+                    " failed, ret=%d\n",
+                    prev_device_, ret);
+        }
+    }
+
+    bool ok() const { return ok_; }
+
+    DeviceGuard(const DeviceGuard &) = delete;
+    DeviceGuard &operator=(const DeviceGuard &) = delete;
+
+   private:
+    int target_device_;
+    int prev_device_ = -1;
+    bool have_prev_ = false;
+    bool switched_ = false;
+    bool ok_;
+};
+
+}  // namespace
+
 extern "C" {
 
 // Signature matches torch_npu.npu.NPUPluggableAllocator (and torch's
@@ -60,16 +125,13 @@ void *mc_ascend_malloc(size_t size, int device, void *stream) {
         return nullptr;
     }
 
-    aclError ret = aclrtSetDevice(device);
-    if (ret != ACL_ERROR_NONE) {
-        fprintf(stderr,
-                "[mc_ascend_allocator] aclrtSetDevice(%d) failed, ret=%d\n",
-                device, ret);
+    DeviceGuard guard(device);
+    if (!guard.ok()) {
         return nullptr;
     }
 
     void *ptr = nullptr;
-    ret = aclrtMalloc(&ptr, size, ACL_MEM_MALLOC_HUGE_ONLY);
+    aclError ret = aclrtMalloc(&ptr, size, ACL_MEM_MALLOC_HUGE_ONLY);
     if (ret != ACL_ERROR_NONE || ptr == nullptr) {
         fprintf(stderr,
                 "[mc_ascend_allocator] aclrtMalloc(size=%zu, device=%d,"
@@ -82,16 +144,24 @@ void *mc_ascend_malloc(size_t size, int device, void *stream) {
 
 void mc_ascend_free(void *ptr, size_t size, int device, void *stream) {
     (void)size;
-    (void)device;
     (void)stream;
     if (ptr == nullptr) {
         return;
     }
+
+    DeviceGuard guard(device);
+    if (!guard.ok()) {
+        // Best-effort: still attempt the free on the current device. Worst
+        // case the underlying CANN call reports an error which we surface
+        // via fprintf below.
+    }
+
     aclError ret = aclrtFree(ptr);
     if (ret != ACL_ERROR_NONE) {
         fprintf(stderr,
-                "[mc_ascend_allocator] aclrtFree(%p) failed, ret=%d\n", ptr,
-                ret);
+                "[mc_ascend_allocator] aclrtFree(%p, device=%d) failed,"
+                " ret=%d\n",
+                ptr, device, ret);
     }
 }
 
